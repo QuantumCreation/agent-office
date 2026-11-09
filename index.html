@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Office</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫧</text></svg>" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="ui">
+      <div id="bubbles"></div>
+      <div id="enter" class="hidden" data-mode="start">
+        <div class="enter-card">
+          <div class="enter-title start-only">🫧 Click to enter the office</div>
+          <div class="enter-title resume-only">Click to resume</div>
+          <div class="enter-sub">Mouse to look · <kbd>WASD</kbd> to walk · <kbd>E</kbd> or click to interact · <kbd>Esc</kbd> frees the cursor</div>
+        </div>
+      </div>
+      <div id="hud-tl">
+        <div class="brand">🫧 Agent Office <span id="conn" title="Connection to the office bridge"></span></div>
+        <button id="floor-badge" class="floor-badge" title="Floors (F)">Loading…</button>
+        <div class="hud-btns">
+          <button id="mute" class="icon-btn" title="Sounds (M)">🔔</button>
+        </div>
+      </div>
+      <div id="attention"></div>
+      <div id="banner" class="hidden"></div>
+      <div id="prompt" class="hidden"></div>
+      <div id="help">
+        <button id="help-toggle" class="help-toggle">? controls</button>
+        <div class="help-body">
+          <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run</div>
+          <div>Click the view, then move the mouse to look · <kbd>Esc</kbd> frees the cursor</div>
+          <div><kbd>E</kbd> or click: use what you're looking at</div>
+          <div><kbd>V</kbd> first person / overview camera</div>
+          <div><kbd>F</kbd> floors · <kbd>B</kbd> issue board · <kbd>M</kbd> mute</div>
+        </div>
+      </div>
+      <div id="crosshair" class="hidden"></div>
+
+      <div id="toasts"></div>
+      <div id="fade"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
