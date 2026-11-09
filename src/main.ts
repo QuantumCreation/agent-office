@@ -16,6 +16,8 @@ import { hashString } from "./world/toon.ts";
 import { closeModal, h, modalOpen, onModalClosed, openModal, timeAgo, toast } from "./ui/dom.ts";
 import { AgentPanel } from "./ui/panel.ts";
 import { IssueBoardModal } from "./ui/board.ts";
+import { defaultBoardSettings } from "../shared/board.ts";
+import { OfficeChat } from "./ui/chat.ts";
 
 // ------------------------------------------------------------------ setup
 
@@ -38,7 +40,7 @@ enterEl.addEventListener("click", () => {
 /** After a panel or dialog closes (from a click or key press), jump straight back into first person. */
 function resumeLook() {
   setTimeout(() => {
-    if (!modalOpen() && !panel.isOpen && !isTyping()) player.lock();
+    if (!modalOpen() && !panel.isOpen && (!isTyping() || chat.typing)) player.lock();
   }, 0);
 }
 
@@ -99,7 +101,7 @@ resize();
 
 // ------------------------------------------------------------------ state
 
-let snapshot: OfficeSnapshot = { connected: false, error: null, projects: [], agents: [], issues: [], pm: {}, bridgeUrl: "" };
+let snapshot: OfficeSnapshot = { connected: false, error: null, projects: [], agents: [], issues: [], pm: {}, boards: {}, bridgeUrl: "" };
 let firstSnapshot = true;
 let floorId: string | null = null;
 const bloops = new Map<string, Bloop>(); // agents on the current floor
@@ -195,6 +197,17 @@ const panel = new AgentPanel({
   onClose: resumeLook,
 });
 ui.append(panel.el);
+
+// Office Chat: message anyone from anywhere while you keep walking (T to show/hide).
+const chat = new OfficeChat({
+  agents: () => snapshot.agents.filter((a) => !layingOff.has(a.id)),
+  nameOf,
+  colorOf,
+  floorLabel: (pid) => `${floorNumber(pid)}F ${floorTitle(pid)}`,
+  walkTo: (id) => approachAgent(id),
+  resume: resumeLook,
+});
+ui.append(chat.el); // after the panel: hides itself while you're talking to someone face to face
 
 onModalClosed(resumeLook);
 
@@ -451,10 +464,18 @@ function drawBoardIfChanged() {
   if (!floorId) return;
   const issues = snapshot.issues.filter((i) => i.projectId === floorId);
   const pmId = snapshot.pm[floorId];
-  const key = JSON.stringify([issues.map((i) => [i.id, i.status, i.title, i.assignee]), pmId]);
+  const settings = snapshot.boards?.[floorId] ?? defaultBoardSettings();
+  const key = JSON.stringify([
+    issues.map((i) => [i.id, i.status, i.title, i.assignee, i.labels]),
+    pmId,
+    settings.columns,
+    settings.wall,
+    settings.gitlab.enabled,
+    "labels" in settings ? settings.labels : null,
+  ]);
   if (key === lastBoardKey) return;
   lastBoardKey = key;
-  drawBoard(office.board.ctx, issues, nameOf, pmId ? nameOf(pmId) : null);
+  drawBoard(office.board.ctx, issues, settings, nameOf, pmId ? nameOf(pmId) : null);
   office.board.texture.needsUpdate = true;
 }
 
@@ -527,6 +548,7 @@ function onSnapshot(s: OfficeSnapshot) {
   }
   firstSnapshot = false;
   panel.sync();
+  chat.sync();
   board.refresh();
   renderHud();
 }
@@ -681,6 +703,13 @@ window.addEventListener("keydown", (e) => {
     toggleMute();
   } else if (e.code === "KeyV") {
     player.toggleView();
+  } else if (e.code === "KeyT") {
+    chat.toggle();
+  } else if ((e.code === "Enter" || e.code === "NumpadEnter") && !(document.activeElement as HTMLElement | null)?.closest("button, a")) {
+    e.preventDefault();
+    chat.focusComposer();
+  } else if (e.code === "BracketLeft" || e.code === "BracketRight") {
+    chat.cycle(e.code === "BracketLeft" ? -1 : 1);
   }
 });
 
@@ -1107,7 +1136,8 @@ function frame() {
     m.scale.setScalar(near ? 0.42 : 0.0001);
   }
   if (office.pmMarker.visible) office.pmMarker.position.y = 1.15 + hover;
-  const uiBusy = modalOpen() || panel.isOpen || isTyping();
+  // Typing in Office Chat keeps the mouse captured so you can glance around mid-message.
+  const uiBusy = modalOpen() || panel.isOpen || (isTyping() && !chat.typing);
   if (uiBusy && player.isLocked) player.unlock();
   const fp = player.view === "first";
   crosshairEl.classList.toggle("hidden", !fp || uiBusy || !player.isLocked);
@@ -1141,6 +1171,7 @@ frame();
   openElevator,
   openAgent,
   board,
+  chat,
   snapshot: () => snapshot,
   bloops,
   nav,

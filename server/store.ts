@@ -1,15 +1,23 @@
 // Small JSON persistence for office-only state: desk seating, the issue board,
-// and which thread is each floor's board manager.
+// board settings (incl. the GitLab link), and which thread is each floor's board manager.
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Issue } from "../shared/types.ts";
+import type { BoardSettings, Issue } from "../shared/types.ts";
+import { normalizeBoardSettings } from "../shared/board.ts";
+
+/** Board settings as saved. The GitLab token stays on this machine and is never sent to the page. */
+export interface StoredBoard {
+  settings: BoardSettings;
+  gitlabToken: string | null;
+}
 
 export interface OfficeData {
   version: 1;
   desks: Record<string, { projectId: string; desk: number }>;
   issues: Issue[];
   pm: Record<string, string>;
+  boards: Record<string, StoredBoard>;
 }
 
 export class Store {
@@ -19,12 +27,22 @@ export class Store {
 
   constructor(path: string) {
     this.path = path;
-    this.data = { version: 1, desks: {}, issues: [], pm: {} };
+    this.data = { version: 1, desks: {}, issues: [], pm: {}, boards: {} };
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8"));
       this.data = { ...this.data, ...parsed };
     } catch {
       /* first run */
+    }
+    // Older saves: tickets had no tags/source, boards had no settings.
+    this.data.issues = this.data.issues.map((i) => ({
+      ...i,
+      labels: Array.isArray(i.labels) ? i.labels : [],
+      source: i.source ?? "local",
+      external: i.external ?? null,
+    }));
+    for (const [pid, b] of Object.entries(this.data.boards)) {
+      this.data.boards[pid] = { settings: normalizeBoardSettings(b?.settings), gitlabToken: b?.gitlabToken ?? null };
     }
   }
 

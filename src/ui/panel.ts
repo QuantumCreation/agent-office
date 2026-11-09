@@ -13,7 +13,7 @@ export interface PanelHost {
   onClose(): void;
 }
 
-const ACTIVITY_TEXT: Record<string, string> = {
+export const ACTIVITY_TEXT: Record<string, string> = {
   working: "Working",
   "needs-input": "Needs you",
   done: "Done, waiting for review",
@@ -242,103 +242,107 @@ export class AgentPanel {
       this.pendingBox.replaceChildren();
       return;
     }
-    const id = this.agentId;
-    const box = h("div", { class: "pending-card" });
-    if (p.questions.length) {
-      box.append(h("div", { class: "pending-title" }, "🙋 They have a question"));
-      const answers: Record<string, string | string[]> = {};
-      for (const q of p.questions) {
-        const opts = h("div", { class: "options" });
-        const custom = h("input", { placeholder: "Or type your own answer…" });
-        for (const o of q.options) {
-          const b = h(
-            "button",
-            {
-              class: "opt",
-              title: o.description,
-              onclick: () => {
-                if (q.multiSelect) {
-                  const cur = new Set((answers[q.id] as string[] | undefined) ?? []);
-                  cur.has(o.label) ? cur.delete(o.label) : cur.add(o.label);
-                  answers[q.id] = [...cur];
-                  b.classList.toggle("on");
-                } else {
-                  answers[q.id] = o.label;
-                  opts.querySelectorAll(".opt").forEach((x) => x.classList.remove("on"));
-                  b.classList.add("on");
-                }
-              },
-            },
-            h("strong", {}, o.label),
-            o.description ? h("span", {}, o.description) : null,
-          );
-          opts.append(b);
-        }
-        custom.addEventListener("input", () => {
-          if (custom.value.trim()) answers[q.id] = custom.value.trim();
-        });
-        custom.addEventListener("keydown", (e) => e.stopPropagation());
-        box.append(h("div", { class: "question" }, h("div", { class: "q" }, q.header ? h("span", { class: "tag" }, q.header) : null, q.question), opts, custom));
-      }
-      box.append(
-        h(
-          "button",
-          {
-            class: "btn primary",
-            onclick: async () => {
-              try {
-                await api.respond(id, { requestId: p.requestId, answers });
-                toast("Answer sent!", "good");
-                this.pendingBox.replaceChildren();
-              } catch (e) {
-                toast(`Couldn't answer: ${(e as Error).message}. You can reply in the message box instead.`, "bad");
-              }
-            },
-          },
-          "Send answer",
-        ),
-      );
-    } else {
-      box.append(h("div", { class: "pending-title" }, `✋ Needs approval (${p.kind})`));
-      if (p.prompt) box.append(h("pre", { class: "approval" }, p.prompt));
-      if (p.reason) box.append(h("div", { class: "muted" }, p.reason));
-      const options = p.options.length
-        ? p.options
-        : [
-            { decision: "accept", label: "Approve" },
-            { decision: "acceptForSession", label: "Approve for session" },
-            { decision: "decline", label: "Decline" },
-          ];
-      box.append(
-        h(
-          "div",
-          { class: "row" },
-          options.map((o) =>
-            h(
-              "button",
-              {
-                class: `btn ${o.decision.startsWith("accept") ? "primary" : "danger"}`,
-                onclick: async () => {
-                  try {
-                    await api.respond(id, { requestId: p.requestId, decision: o.decision });
-                    toast(`${o.label} ✓`, "good");
-                    this.pendingBox.replaceChildren();
-                  } catch (e) {
-                    toast(`Couldn't respond: ${(e as Error).message}`, "bad");
-                  }
-                },
-              },
-              o.label,
-            ),
-          ),
-        ),
-      );
-    }
-    this.pendingBox.replaceChildren(box);
+    this.pendingBox.replaceChildren(pendingCard(this.agentId, p, () => this.pendingBox.replaceChildren()));
   }
 }
 
-function toolLine(item: ActivityItem) {
+/** A question or approval card the agent is waiting on, answerable inline. */
+export function pendingCard(id: string, p: PendingRequest, onResolved: () => void): HTMLElement {
+  const box = h("div", { class: "pending-card" });
+  if (p.questions.length) {
+    box.append(h("div", { class: "pending-title" }, "🙋 They have a question"));
+    const answers: Record<string, string | string[]> = {};
+    for (const q of p.questions) {
+      const opts = h("div", { class: "options" });
+      const custom = h("input", { placeholder: "Or type your own answer…" });
+      for (const o of q.options) {
+        const b = h(
+          "button",
+          {
+            class: "opt",
+            title: o.description,
+            onclick: () => {
+              if (q.multiSelect) {
+                const cur = new Set((answers[q.id] as string[] | undefined) ?? []);
+                cur.has(o.label) ? cur.delete(o.label) : cur.add(o.label);
+                answers[q.id] = [...cur];
+                b.classList.toggle("on");
+              } else {
+                answers[q.id] = o.label;
+                opts.querySelectorAll(".opt").forEach((x) => x.classList.remove("on"));
+                b.classList.add("on");
+              }
+            },
+          },
+          h("strong", {}, o.label),
+          o.description ? h("span", {}, o.description) : null,
+        );
+        opts.append(b);
+      }
+      custom.addEventListener("input", () => {
+        if (custom.value.trim()) answers[q.id] = custom.value.trim();
+      });
+      custom.addEventListener("keydown", (e) => e.stopPropagation());
+      box.append(h("div", { class: "question" }, h("div", { class: "q" }, q.header ? h("span", { class: "tag" }, q.header) : null, q.question), opts, custom));
+    }
+    box.append(
+      h(
+        "button",
+        {
+          class: "btn primary",
+          onclick: async () => {
+            try {
+              await api.respond(id, { requestId: p.requestId, answers });
+              toast("Answer sent!", "good");
+              onResolved();
+            } catch (e) {
+              toast(`Couldn't answer: ${(e as Error).message}. You can reply in the message box instead.`, "bad");
+            }
+          },
+        },
+        "Send answer",
+      ),
+    );
+  } else {
+    box.append(h("div", { class: "pending-title" }, `✋ Needs approval (${p.kind})`));
+    if (p.prompt) box.append(h("pre", { class: "approval" }, p.prompt));
+    if (p.reason) box.append(h("div", { class: "muted" }, p.reason));
+    const options = p.options.length
+      ? p.options
+      : [
+          { decision: "accept", label: "Approve" },
+          { decision: "acceptForSession", label: "Approve for session" },
+          { decision: "decline", label: "Decline" },
+        ];
+    box.append(
+      h(
+        "div",
+        { class: "row" },
+        options.map((o) =>
+          h(
+            "button",
+            {
+              class: `btn ${o.decision.startsWith("accept") ? "primary" : "danger"}`,
+              onclick: async () => {
+                try {
+                  await api.respond(id, { requestId: p.requestId, decision: o.decision });
+                  toast(`${o.label} ✓`, "good");
+                  onResolved();
+                } catch (e) {
+                  toast(`Couldn't respond: ${(e as Error).message}`, "bad");
+                }
+              },
+            },
+            o.label,
+          ),
+        ),
+      ),
+    );
+  }
+  return box;
+}
+
+export function toolLine(item: ActivityItem) {
   const icons: Record<string, string> = {
     command: "$",
     thinking: "💭",

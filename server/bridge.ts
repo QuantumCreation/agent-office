@@ -5,15 +5,19 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { T3Client } from "./t3.ts";
-import { Store } from "./store.ts";
+import { Store, type StoredBoard } from "./store.ts";
+import * as gitlab from "./gitlab.ts";
+import { applyBoardPatch, BoardSettingsError, defaultBoardSettings, slugify, WALL_MAX_COLUMNS } from "../shared/board.ts";
 import {
   DESK_COUNT,
   PM_DESK,
   type Activity,
   type ActivityItem,
   type AgentInfo,
+  type BoardColumn,
+  type BoardSettings,
+  type BoardState,
   type Issue,
-  type IssueStatus,
   type OfficeSnapshot,
   type PendingRequest,
   type ProjectInfo,
@@ -25,6 +29,7 @@ type Next = (err?: unknown) => void;
 
 const RUNNING = new Set(["preparing", "queued", "starting", "running"]);
 const POLL_MS = 1500;
+const GITLAB_SYNC_MS = 30_000;
 
 export interface BridgeOptions {
   dataFile: string;
@@ -47,6 +52,7 @@ export function createBridge(options: BridgeOptions) {
     agents: [],
     issues: store.data.issues,
     pm: store.data.pm,
+    boards: {},
     bridgeUrl: options.publicUrl(),
   };
   let lastSent = "";
@@ -123,21 +129,19 @@ export function createBridge(options: BridgeOptions) {
   }
 
   function updateIssuesFromActivity(agents: AgentInfo[]) {
-    let changed = false;
     const byId = new Map(agents.map((a) => [a.id, a]));
     for (const issue of store.data.issues) {
-      if (issue.status !== "doing" || !issue.assignee) continue;
+      if (!issue.assignee) continue;
+      const { flow } = settingsOf(issue.projectId);
+      if (issue.status !== flow.onAssign || flow.onAssign === flow.onFinish) continue;
       const agent = byId.get(issue.assignee);
       if (!agent) continue;
       const before = prevActivity.get(agent.id);
       if (before === "working" && (agent.activity === "done" || agent.activity === "idle")) {
-        issue.status = "review";
-        issue.updatedAt = new Date().toISOString();
-        changed = true;
+        moveIssue(issue, flow.onFinish).catch((error) => console.warn(`[board] couldn't move ${issue.id}: ${(error as Error).message}`));
       }
     }
     for (const a of agents) prevActivity.set(a.id, a.activity);
-    if (changed) store.save();
   }
 
   async function poll() {
@@ -192,6 +196,7 @@ export function createBridge(options: BridgeOptions) {
         agents,
         issues: store.data.issues,
         pm: store.data.pm,
+        boards: snapshot.boards,
         bridgeUrl: options.publicUrl(),
       };
     } catch (error) {
@@ -212,6 +217,7 @@ export function createBridge(options: BridgeOptions) {
   function broadcast(force = false) {
     snapshot.issues = store.data.issues;
     snapshot.pm = store.data.pm;
+    snapshot.boards = boardsSnapshot();
     const body = JSON.stringify(snapshot);
     if (!force && body === lastSent) return;
     lastSent = body;
@@ -307,6 +313,211 @@ export function createBridge(options: BridgeOptions) {
     return detail;
   }
 
+  // ---------------------------------------------------------------- board settings + GitLab
+
+  const syncStatus = new Map<string, BoardState["sync"]>();
+  const labelCache = new Map<string, BoardState["labels"]>();
+  /** Bumped whenever a board's link changes, so a sync that started before it is thrown away. */
+  const linkGeneration = new Map<string, number>();
+  const defaults = defaultBoardSettings();
+
+  function storedBoard(projectId: string): StoredBoard | undefined {
+    return store.data.boards[projectId];
+  }
+
+  function settingsOf(projectId: string): BoardSettings {
+    return storedBoard(projectId)?.settings ?? defaults;
+  }
+
+  function tokenOf(projectId: string): string | null {
+    return storedBoard(projectId)?.gitlabToken || process.env.GITLAB_TOKEN || null;
+  }
+
+  function gitlabActive(projectId: string): boolean {
+    const g = settingsOf(projectId).gitlab;
+    return g.enabled && Boolean(g.project);
+  }
+
+  function targetOf(projectId: string) {
+    return gitlab.targetOf(settingsOf(projectId).gitlab, tokenOf(projectId));
+  }
+
+  function statusOf(projectId: string): BoardState["sync"] {
+    let st = syncStatus.get(projectId);
+    if (!st) syncStatus.set(projectId, (st = { at: null, error: null, count: 0, busy: false }));
+    return st;
+  }
+
+  function boardState(projectId: string): BoardState {
+    const settings = settingsOf(projectId);
+    return {
+      ...settings,
+      gitlab: { ...settings.gitlab, hasToken: Boolean(tokenOf(projectId)) },
+      labels: labelCache.get(projectId) ?? [],
+      sync: { ...statusOf(projectId) },
+    };
+  }
+
+  function boardsSnapshot(): Record<string, BoardState> {
+    const ids = new Set([...snapshot.projects.map((p) => p.id), ...Object.keys(store.data.boards)]);
+    return Object.fromEntries([...ids].map((id) => [id, boardState(id)]));
+  }
+
+  function column(projectId: string, id: string): BoardColumn {
+    const columns = settingsOf(projectId).columns;
+    const col = columns.find((c) => c.id === id);
+    if (!col) throw httpError(400, `Unknown column "${id}". Columns: ${columns.map((c) => c.id).join(", ")}`);
+    return col;
+  }
+
+  function gitlabIssueId(g: gitlab.GitlabIssue) {
+    return `gl-${g.project_id}-${g.iid}`;
+  }
+
+  function fromGitlab(projectId: string, g: gitlab.GitlabIssue, prev: Issue | undefined): Issue {
+    const labels = Array.isArray(g.labels) ? g.labels.map(String) : [];
+    return {
+      id: gitlabIssueId(g),
+      projectId,
+      title: String(g.title ?? "").slice(0, 200),
+      body: String(g.description ?? "").slice(0, 8000),
+      status: gitlab.columnForIssue({ state: g.state, labels }, settingsOf(projectId).columns)?.id ?? "",
+      labels,
+      assignee: prev?.assignee ?? null,
+      createdBy: prev?.createdBy ?? (g.author?.username ? `@${g.author.username}` : "gitlab"),
+      createdAt: g.created_at,
+      updatedAt: g.updated_at,
+      source: "gitlab",
+      external: { iid: g.iid, url: g.web_url, state: g.state === "closed" ? "closed" : "opened", projectId: g.project_id },
+    };
+  }
+
+  /** Puts one GitLab issue on the board, updating the existing ticket object in place. */
+  function upsertGitlab(projectId: string, g: gitlab.GitlabIssue): Issue {
+    const existing = store.data.issues.find((i) => i.id === gitlabIssueId(g));
+    const next = fromGitlab(projectId, g, existing);
+    if (existing) Object.assign(existing, next);
+    else store.data.issues.push(next);
+    store.save();
+    broadcast();
+    return existing ?? next;
+  }
+
+  function dropGitlabIssues(projectId: string) {
+    const before = store.data.issues.length;
+    store.data.issues = store.data.issues.filter((i) => !(i.projectId === projectId && i.source === "gitlab"));
+    if (store.data.issues.length !== before) store.save();
+  }
+
+  /** Re-sorts tickets into columns after the columns change. */
+  function restatus(projectId: string) {
+    const columns = settingsOf(projectId).columns;
+    const ids = new Set(columns.map((c) => c.id));
+    for (const issue of store.data.issues) {
+      if (issue.projectId !== projectId) continue;
+      if (issue.source === "gitlab" && issue.external) {
+        issue.status = gitlab.columnForIssue({ state: issue.external.state, labels: issue.labels }, columns)?.id ?? "";
+      } else if (!ids.has(issue.status)) {
+        // Its column was removed: park it in the first column rather than losing it.
+        issue.status = columns[0].id;
+      }
+    }
+    store.save();
+  }
+
+  async function syncGitlab(projectId: string): Promise<void> {
+    const st = statusOf(projectId);
+    if (!gitlabActive(projectId)) {
+      dropGitlabIssues(projectId);
+      Object.assign(st, { error: null, count: 0 });
+      broadcast();
+      return;
+    }
+    if (st.busy) return;
+    const generation = linkGeneration.get(projectId) ?? 0;
+    st.busy = true;
+    broadcast();
+    try {
+      const target = targetOf(projectId);
+      const wantClosed = settingsOf(projectId).columns.some((c) => c.gitlabState === "closed");
+      const [list, labels] = await Promise.all([
+        gitlab.listIssues(target, { closed: wantClosed }),
+        gitlab.listLabels(target).catch(() => labelCache.get(projectId) ?? []),
+      ]);
+      if ((linkGeneration.get(projectId) ?? 0) !== generation) return; // the link changed meanwhile
+      labelCache.set(projectId, labels);
+      const prev = new Map(store.data.issues.filter((i) => i.projectId === projectId && i.source === "gitlab").map((i) => [i.id, i]));
+      const mapped = [...list]
+        .sort((a: any, b: any) => (a.relative_position ?? Infinity) - (b.relative_position ?? Infinity) || a.iid - b.iid)
+        .map((g) => fromGitlab(projectId, g, prev.get(gitlabIssueId(g))));
+      store.data.issues = [...store.data.issues.filter((i) => !(i.projectId === projectId && i.source === "gitlab")), ...mapped];
+      store.save();
+      Object.assign(st, { at: new Date().toISOString(), error: null, count: mapped.length });
+    } catch (error) {
+      st.error = (error as Error).message;
+    } finally {
+      st.busy = false;
+      broadcast();
+    }
+  }
+
+  function syncAllGitlab() {
+    for (const projectId of Object.keys(store.data.boards)) {
+      if (gitlabActive(projectId)) void syncGitlab(projectId);
+    }
+  }
+
+  function saveSettings(projectId: string, settings: BoardSettings, token?: string | null) {
+    const prev = storedBoard(projectId);
+    const linkChanged =
+      JSON.stringify(prev?.settings.gitlab ?? defaults.gitlab) !== JSON.stringify(settings.gitlab) || token !== undefined;
+    store.data.boards[projectId] = { settings, gitlabToken: token !== undefined ? token : (prev?.gitlabToken ?? null) };
+    store.save();
+    restatus(projectId);
+    if (linkChanged) {
+      linkGeneration.set(projectId, (linkGeneration.get(projectId) ?? 0) + 1);
+      labelCache.delete(projectId);
+      statusOf(projectId).busy = false;
+      dropGitlabIssues(projectId);
+      void syncGitlab(projectId);
+    }
+    broadcast();
+  }
+
+  async function updateSettings(projectId: string, patch: Json): Promise<BoardState> {
+    if (!snapshot.projects.some((p) => p.id === projectId) && !storedBoard(projectId)) throw httpError(404, "Unknown project");
+    let token: string | null | undefined;
+    if (patch?.gitlab && typeof patch.gitlab === "object" && "token" in patch.gitlab) {
+      const t = patch.gitlab.token;
+      token = typeof t === "string" && t.trim() ? t.trim() : null;
+      patch = { ...patch, gitlab: { ...patch.gitlab } };
+      delete patch.gitlab.token;
+    }
+    let next: BoardSettings;
+    try {
+      next = applyBoardPatch(settingsOf(projectId), patch);
+    } catch (error) {
+      if (error instanceof BoardSettingsError) throw httpError(400, error.message);
+      throw error;
+    }
+    saveSettings(projectId, next, token);
+    return boardState(projectId);
+  }
+
+  /** Replaces the columns with the lists of the linked GitLab issue board. */
+  async function importColumns(projectId: string): Promise<BoardState> {
+    const settings = settingsOf(projectId);
+    if (!settings.gitlab.project) throw httpError(400, "Link a GitLab project first (gitlab.url or gitlab.project)");
+    if (!settings.gitlab.boardId) throw httpError(400, "Set gitlab.boardId (or paste the board's URL) to import its columns");
+    const cols = await gitlab.boardColumns(targetOf(projectId), settings.gitlab.boardId);
+    if (!cols.length) throw httpError(400, "That GitLab board has no lists to import");
+    const columns = cols.map((c) => ({ ...c, id: slugify(c.title) }));
+    const ids = [...new Set(columns.map((c) => c.id))];
+    // Keep the wall on the board's working lists when there are more than four.
+    const wall = ids.length > WALL_MAX_COLUMNS && columns[0].gitlabState === "opened" ? ids.slice(1, WALL_MAX_COLUMNS + 1) : ids.slice(0, WALL_MAX_COLUMNS);
+    return updateSettings(projectId, { columns, wall: { columns: wall }, view: { columns: ids } });
+  }
+
   // ---------------------------------------------------------------- issues + PM
 
   function findIssue(id: string): Issue {
@@ -315,31 +526,177 @@ export function createBridge(options: BridgeOptions) {
     return issue;
   }
 
+  function gitlabTicket(issue: Issue) {
+    if (issue.source !== "gitlab" || !issue.external) return null;
+    if (!gitlabActive(issue.projectId)) throw httpError(409, "This ticket comes from GitLab, but the board's GitLab link is off");
+    return { iid: issue.external.iid, target: targetOf(issue.projectId) };
+  }
+
+  /** Moves a ticket to a column, in GitLab too when it's a GitLab ticket. */
+  async function moveIssue(issue: Issue, columnId: string): Promise<Issue> {
+    const to = column(issue.projectId, columnId);
+    const gl = gitlabTicket(issue);
+    if (gl) {
+      const edit = gitlab.moveEdit({ state: issue.external!.state, labels: issue.labels }, to, settingsOf(issue.projectId).columns);
+      if (!Object.keys(edit).length) return issue;
+      return upsertGitlab(issue.projectId, await gitlab.updateIssue(gl.target, gl.iid, edit));
+    }
+    issue.status = to.id;
+    issue.updatedAt = new Date().toISOString();
+    store.save();
+    broadcast();
+    return issue;
+  }
+
+  function readLabels(value: unknown): string[] | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) throw httpError(400, "labels must be an array of strings");
+    return [...new Set(value.map((l) => String(l).trim()).filter(Boolean))].slice(0, 30);
+  }
+
+  async function createIssue(body: Json): Promise<Issue> {
+    const projectId = String(body.projectId);
+    const settings = settingsOf(projectId);
+    const col = body.status ? column(projectId, String(body.status)) : settings.columns[0];
+    const title = String(body.title).slice(0, 200);
+    const text = String(body.body ?? "").slice(0, 8000);
+    const labels = readLabels(body.labels) ?? [];
+    const createdBy = String(body.createdBy ?? "agent").slice(0, 60);
+    if (gitlabActive(projectId) && body.local !== true) {
+      const target = targetOf(projectId);
+      const withColumn = col.gitlabLabel ? [...new Set([...labels, col.gitlabLabel])] : labels;
+      let g = await gitlab.createIssue(target, { title, description: text, labels: withColumn });
+      if (col.gitlabState === "closed") g = await gitlab.updateIssue(target, g.iid, { state_event: "close" });
+      const issue = upsertGitlab(projectId, g);
+      issue.createdBy = createdBy;
+      store.save();
+      return issue;
+    }
+    const now = new Date().toISOString();
+    const issue: Issue = {
+      id: randomUUID(),
+      projectId,
+      title,
+      body: text,
+      status: col.id,
+      labels,
+      assignee: null,
+      createdBy,
+      createdAt: now,
+      updatedAt: now,
+      source: "local",
+      external: null,
+    };
+    store.data.issues.push(issue);
+    store.save();
+    broadcast();
+    return issue;
+  }
+
+  async function patchIssue(issue: Issue, body: Json): Promise<Issue> {
+    const labels = readLabels(body.labels);
+    const title = typeof body.title === "string" ? body.title.slice(0, 200) : undefined;
+    const text = typeof body.body === "string" ? body.body.slice(0, 8000) : undefined;
+    const to = body.status !== undefined && body.status !== issue.status ? column(issue.projectId, String(body.status)) : null;
+    if (body.assignee !== undefined) issue.assignee = body.assignee || null;
+    const gl = gitlabTicket(issue);
+    if (gl) {
+      const edit: Parameters<typeof gitlab.updateIssue>[2] = {};
+      if (title !== undefined) edit.title = title;
+      if (text !== undefined) edit.description = text;
+      const columns = settingsOf(issue.projectId).columns;
+      const state = issue.external!.state;
+      if (labels) {
+        // Explicit tags keep the ticket's column label unless it's moving.
+        const colLabels = new Set(columns.map((c) => c.gitlabLabel?.toLowerCase()).filter(Boolean));
+        const keep = to ? [] : issue.labels.filter((l) => colLabels.has(l.toLowerCase()));
+        edit.labels = [...new Set([...labels.filter((l) => !colLabels.has(l.toLowerCase())), ...keep])];
+        if (to) {
+          if (!to.gitlabLabel && !to.gitlabState) throw httpError(400, `Column "${to.title}" isn't linked to GitLab`);
+          if (to.gitlabLabel) edit.labels.push(to.gitlabLabel);
+          if (to.gitlabState === "closed" && state !== "closed") edit.state_event = "close";
+          if (to.gitlabState !== "closed" && state === "closed") edit.state_event = "reopen";
+        }
+      } else if (to) {
+        Object.assign(edit, gitlab.moveEdit({ state, labels: issue.labels }, to, columns));
+      }
+      if (Object.keys(edit).length) return upsertGitlab(issue.projectId, await gitlab.updateIssue(gl.target, gl.iid, edit));
+      store.save();
+      broadcast();
+      return issue;
+    }
+    if (labels) issue.labels = labels;
+    if (title !== undefined) issue.title = title;
+    if (text !== undefined) issue.body = text;
+    if (to) issue.status = to.id;
+    issue.updatedAt = new Date().toISOString();
+    store.save();
+    broadcast();
+    return issue;
+  }
+
+  /** Marks a ticket as taken by an agent and moves it to the "assigned" column. */
+  async function startWork(issue: Issue, threadId: string): Promise<{ issue: Issue; warning?: string }> {
+    issue.assignee = threadId;
+    issue.updatedAt = new Date().toISOString();
+    store.save();
+    try {
+      return { issue: await moveIssue(issue, settingsOf(issue.projectId).flow.onAssign) };
+    } catch (error) {
+      broadcast();
+      return { issue, warning: `Assigned, but couldn't move the ticket: ${(error as Error).message}` };
+    }
+  }
+
   function ticketMessage(issue: Issue) {
     const base = options.publicUrl();
+    const finish = settingsOf(issue.projectId).flow.onFinish;
     return [
-      `You've been assigned ticket #${issue.id.slice(0, 6)} from the office issue board.`,
+      `You've been assigned ticket ${issue.external ? `#${issue.external.iid} (GitLab: ${issue.external.url})` : `#${issue.id.slice(0, 6)}`} from the office issue board.`,
       ``,
       `# ${issue.title}`,
       issue.body ? `\n${issue.body}\n` : "",
-      `When you finish, mark the ticket for review: curl -s -X PATCH ${base}/api/issues/${issue.id} -H 'content-type: application/json' -d '{"status":"review"}'`,
+      `When you finish, move the ticket on: curl -s -X PATCH ${base}/api/issues/${encodeURIComponent(issue.id)} -H 'content-type: application/json' -d '{"status":"${finish}"}'`,
     ].join("\n");
+  }
+
+  function boardGuide(projectId: string) {
+    const base = options.publicUrl();
+    const s = settingsOf(projectId);
+    const cols = s.columns.map((c) => `${c.id} ("${c.title}")`).join(", ");
+    return `Board API for project ${projectId} (JSON over HTTP, use curl):
+- List tickets:     curl -s '${base}/api/issues?projectId=${projectId}'
+- Create a ticket:  curl -s -X POST ${base}/api/issues -H 'content-type: application/json' -d '{"projectId":"${projectId}","title":"...","body":"...","labels":["optional tag"],"status":"<optional column id>"}'
+- Update a ticket:  curl -s -X PATCH ${base}/api/issues/<id> -H 'content-type: application/json' -d '{"status":"<column id>","title":"...","body":"...","labels":["..."]}'
+- Delete a ticket:  curl -s -X DELETE ${base}/api/issues/<id>   (GitLab tickets get closed in GitLab, not deleted)
+- List agents on this floor (id, title, activity): curl -s '${base}/api/agents?projectId=${projectId}'
+- Assign a ticket to an existing agent (sends them the ticket): curl -s -X POST ${base}/api/issues/<id>/assign -H 'content-type: application/json' -d '{"threadId":"<agent id>"}'
+- Hire a new agent for a ticket (they take a free desk and start on it): curl -s -X POST ${base}/api/issues/<id>/hire
+
+Board settings (columns, what the wall board and the board view show, the GitLab link):
+- Read:   curl -s '${base}/api/board/settings?projectId=${projectId}'
+- Change: curl -s -X PATCH ${base}/api/board/settings -H 'content-type: application/json' -d '{"projectId":"${projectId}", ...only the fields to change}'
+  Fields:
+  - "columns": the full list of columns, in order: [{"id","title","color":"#rrggbb","gitlabLabel":"<label>"|null,"gitlabState":"opened"|"closed"|null}]. A ticket's status is its column id. With GitLab linked, a column holds the issues with its label (gitlabLabel), or all open issues not in another column ("opened"), or closed issues ("closed").
+  - "wall": {"columns":[up to ${WALL_MAX_COLUMNS} column ids], "tags":"all"|"none"|["tag", ...]}: the big board on the office wall.
+  - "view": {"columns":[column ids], "tags":"all"|"none"|["tag", ...]}: the board you open with B. "tags" picks which tags show on cards.
+  - "flow": {"onAssign":"<column id>","onFinish":"<column id>"}: where tickets move when assigned, and when their agent finishes.
+  - "gitlab": {"url":"https://gitlab.com/group/project/-/boards/<id>"} (or "baseUrl", "project", "boardId"), "enabled":true|false, "token":"<access token with api scope>" (write-only; "" clears it).
+- Sync GitLab now:                      curl -s -X POST ${base}/api/board/sync -H 'content-type: application/json' -d '{"projectId":"${projectId}"}'
+- Copy the GitLab board's lists as columns: curl -s -X POST ${base}/api/board/import -H 'content-type: application/json' -d '{"projectId":"${projectId}"}'
+
+Current columns: ${cols}. Wall shows: ${s.wall.columns.join(", ")}. Board view shows: ${s.view.columns.join(", ")}. GitLab: ${s.gitlab.enabled ? `linked to ${s.gitlab.baseUrl}/${s.gitlab.project}` : "not linked"}.`;
   }
 
   function pmBrief(project: ProjectInfo) {
     const base = options.publicUrl();
     return `You are the Issue Board Manager for the "${project.title}" floor of Agent Office, a 3D office where coding agents (T3 Code threads) work at desks. Project folder: ${project.workspaceRoot}. Project id: ${project.id}.
 
-Your job is to run the floor's issue board: turn the boss's requests into clear tickets, keep the board tidy, and get tickets done by assigning them to agents. Don't write the project code yourself. Delegate it.
+Your job is to run the floor's issue board: turn the boss's requests into clear tickets, keep the board tidy, and get tickets done by assigning them to agents. Don't write the project code yourself. Delegate it. You also own the board's settings: its columns, which columns and tags the wall board and the board view show, and its link to a GitLab issue board. Change them when the boss asks.
 
-Board API (JSON over HTTP, use curl):
-- List tickets:     curl -s '${base}/api/issues?projectId=${project.id}'
-- Create a ticket:  curl -s -X POST ${base}/api/issues -H 'content-type: application/json' -d '{"projectId":"${project.id}","title":"...","body":"..."}'
-- Update a ticket:  curl -s -X PATCH ${base}/api/issues/<id> -H 'content-type: application/json' -d '{"status":"todo|doing|review|done","title":"...","body":"..."}'
-- Delete a ticket:  curl -s -X DELETE ${base}/api/issues/<id>
-- List agents on this floor (id, title, activity): curl -s '${base}/api/agents?projectId=${project.id}'
-- Assign a ticket to an existing agent (sends them the ticket): curl -s -X POST ${base}/api/issues/<id>/assign -H 'content-type: application/json' -d '{"threadId":"<agent id>"}'
-- Hire a new agent for a ticket (they take a free desk and start on it): curl -s -X POST ${base}/api/issues/<id>/hire
+${boardGuide(project.id)}
+
+The full, current API guide is always at: curl -s '${base}/api/board/guide?projectId=${project.id}'
 
 Prefer assigning to idle agents whose title fits the work; hire a new agent when nobody fits. Keep replies short and say what you changed on the board. Start by checking the board and the agents, then say hi to the boss in one or two sentences and wait for instructions.`;
   }
@@ -462,6 +819,23 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
       return { threadId };
     }
 
+    if (a === "board") {
+      const projectId = String(query.get("projectId") ?? body.projectId ?? "");
+      if (!projectId) throw httpError(400, "projectId is required");
+      if (method === "GET" && b === "settings") return boardState(projectId);
+      if (method === "GET" && b === "guide") return boardGuide(projectId);
+      if (method === "PATCH" && b === "settings") {
+        const { projectId: _ignored, ...patch } = body;
+        return updateSettings(projectId, patch);
+      }
+      if (method === "POST" && b === "sync") {
+        if (!gitlabActive(projectId)) throw httpError(400, "This board isn't linked to GitLab");
+        await syncGitlab(projectId);
+        return boardState(projectId);
+      }
+      if (method === "POST" && b === "import") return importColumns(projectId);
+    }
+
     if (a === "issues") {
       if (method === "GET" && !b) {
         const pid = query.get("projectId");
@@ -469,37 +843,25 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
       }
       if (method === "POST" && !b) {
         if (!body.projectId || !body.title) throw httpError(400, "projectId and title are required");
-        const now = new Date().toISOString();
-        const issue: Issue = {
-          id: randomUUID(),
-          projectId: body.projectId,
-          title: String(body.title).slice(0, 200),
-          body: String(body.body ?? "").slice(0, 8000),
-          status: "todo",
-          assignee: null,
-          createdBy: body.createdBy ?? "agent",
-          createdAt: now,
-          updatedAt: now,
-        };
-        store.data.issues.push(issue);
-        store.save();
-        broadcast();
-        return issue;
+        return createIssue(body);
       }
       if (b) {
         const issue = findIssue(b);
-        if (method === "PATCH" && !c) {
-          const statuses: IssueStatus[] = ["todo", "doing", "review", "done"];
-          if (body.status && statuses.includes(body.status)) issue.status = body.status;
-          if (typeof body.title === "string") issue.title = body.title.slice(0, 200);
-          if (typeof body.body === "string") issue.body = body.body.slice(0, 8000);
-          if (body.assignee !== undefined) issue.assignee = body.assignee;
-          issue.updatedAt = new Date().toISOString();
-          store.save();
-          broadcast();
-          return issue;
-        }
+        if (method === "PATCH" && !c) return patchIssue(issue, body);
         if (method === "DELETE" && !c) {
+          const gl = gitlabTicket(issue);
+          if (gl) {
+            // Deleting GitLab issues needs owner rights and can't be undone, so close it instead.
+            const g = await gitlab.updateIssue(gl.target, gl.iid, { state_event: "close" });
+            const showsClosed = settingsOf(issue.projectId).columns.some((col) => col.gitlabState === "closed");
+            if (showsClosed) upsertGitlab(issue.projectId, g);
+            else {
+              store.data.issues = store.data.issues.filter((i) => i.id !== issue.id);
+              store.save();
+              broadcast();
+            }
+            return { ok: true, closedInGitlab: true };
+          }
           store.data.issues = store.data.issues.filter((i) => i.id !== issue.id);
           store.save();
           broadcast();
@@ -508,12 +870,8 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
         if (method === "POST" && c === "assign") {
           if (!body.threadId) throw httpError(400, "threadId is required");
           await t3.sendMessage(body.threadId, ticketMessage(issue));
-          issue.assignee = body.threadId;
-          issue.status = "doing";
-          issue.updatedAt = new Date().toISOString();
-          store.save();
-          broadcast();
-          return issue;
+          const { issue: updated, warning } = await startWork(issue, body.threadId);
+          return warning ? { ...updated, warning } : updated;
         }
         if (method === "POST" && c === "hire") {
           const threadId = await hire(issue.projectId, {
@@ -521,12 +879,8 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
             title: issue.title,
             desk: typeof body.desk === "number" ? body.desk : undefined,
           });
-          issue.assignee = threadId;
-          issue.status = "doing";
-          issue.updatedAt = new Date().toISOString();
-          store.save();
-          broadcast();
-          return { issue, threadId };
+          const { issue: updated, warning } = await startWork(issue, threadId);
+          return { issue: updated, threadId, warning };
         }
       }
     }
@@ -560,6 +914,10 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
     try {
       const body = req.method === "GET" ? {} : await readJson(req);
       const result = await route(req.method ?? "GET", url.pathname, url.searchParams, body);
+      if (typeof result === "string") {
+        res.setHeader("content-type", "text/plain; charset=utf-8");
+        return res.end(result + "\n");
+      }
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify(result));
     } catch (error) {
@@ -570,12 +928,17 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
     }
   }
 
-  void poll().then(schedule);
+  void poll().then(() => {
+    schedule();
+    syncAllGitlab();
+  });
+  const gitlabTimer = setInterval(syncAllGitlab, GITLAB_SYNC_MS);
 
   return {
     middleware,
     close() {
       if (pollTimer) clearTimeout(pollTimer);
+      clearInterval(gitlabTimer);
       for (const res of clients) res.end();
     },
   };

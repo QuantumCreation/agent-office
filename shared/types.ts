@@ -32,7 +32,8 @@ export interface AgentInfo {
   isPm: boolean;
 }
 
-export type IssueStatus = "todo" | "doing" | "review" | "done";
+/** A ticket's column id (see BoardSettings.columns). "" means it fits no column. */
+export type IssueStatus = string;
 
 export interface Issue {
   id: string;
@@ -40,10 +41,61 @@ export interface Issue {
   title: string;
   body: string;
   status: IssueStatus;
+  /** Tags. For GitLab tickets these are the GitLab labels. */
+  labels: string[];
+  /** Office agent (thread id) working on it. Kept locally, even for GitLab tickets. */
   assignee: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  source: "local" | "gitlab";
+  /** Set for tickets mirrored from GitLab. */
+  external: { iid: number; url: string; state: "opened" | "closed"; projectId: number } | null;
+}
+
+export interface BoardColumn {
+  /** Stable id, used as the ticket's status. */
+  id: string;
+  title: string;
+  color: string;
+  /** GitLab list this column mirrors: a label list, or the board's Open / Closed list. */
+  gitlabLabel: string | null;
+  gitlabState: "opened" | "closed" | null;
+}
+
+export interface BoardViewConfig {
+  /** Column ids to show, in order. The wall board shows at most 4. */
+  columns: string[];
+  /** Which tags appear on cards: all of them, none, or only these. */
+  tags: "all" | "none" | string[];
+}
+
+export interface GitlabLink {
+  enabled: boolean;
+  /** e.g. https://gitlab.com or a self-hosted instance. */
+  baseUrl: string;
+  /** Project path ("group/project") or numeric id. */
+  project: string;
+  /** Issue board to import columns from (optional). */
+  boardId: number | null;
+}
+
+export interface BoardSettings {
+  columns: BoardColumn[];
+  /** The big board on the office wall. */
+  wall: BoardViewConfig;
+  /** The board view you open with B / E. */
+  view: BoardViewConfig;
+  /** Where tickets move automatically: when assigned, and when the agent finishes. */
+  flow: { onAssign: string; onFinish: string };
+  gitlab: GitlabLink;
+}
+
+/** Board settings as the client sees them: the token is never sent, only whether one is set. */
+export interface BoardState extends BoardSettings {
+  gitlab: GitlabLink & { hasToken: boolean };
+  labels: { name: string; color: string }[];
+  sync: { at: string | null; error: string | null; count: number; busy: boolean };
 }
 
 export interface OfficeSnapshot {
@@ -53,6 +105,8 @@ export interface OfficeSnapshot {
   agents: AgentInfo[];
   issues: Issue[];
   pm: Record<string, string>;
+  /** Board settings per project id. */
+  boards: Record<string, BoardState>;
   bridgeUrl: string;
 }
 

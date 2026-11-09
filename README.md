@@ -26,8 +26,9 @@ npm run dev        # http://127.0.0.1:5199
 | Talking to them | Sending a message (`t3 thread send`); questions and approvals can be answered inline |
 | Hiring at an empty desk | Starting a thread (`t3 thread start`) with your task |
 | Laying off | Archiving the thread (they pack a box and take the elevator out) |
+| Office Chat (T) | Messaging any thread from anywhere; unread badges for new replies, questions and approvals inline |
 | Meeting room | Your message goes to every attendee; their replies show up in the meeting log |
-| Issue board + PM | Tickets stored in `data/office.json`. The PM is a thread that manages the board through the office's HTTP API |
+| Issue board + PM | Tickets stored in `data/office.json`, or mirrored from a linked GitLab issue board. The PM is a thread that manages the board, and its settings, through the office's HTTP API |
 
 ## Controls
 
@@ -35,6 +36,8 @@ npm run dev        # http://127.0.0.1:5199
 - **E** or click: use whatever is under the crosshair (talk, hire, board, meeting, elevator).
 - **V** switches between first person and an over-the-shoulder overview.
 - **F** floors · **B** issue board · **M** mute.
+- **T** opens Office Chat, a messenger with every agent on every floor. It stays open while you walk:
+  **Enter** to type (Enter sends and puts you back to walking), **[** / **]** to switch chats.
 - The top-right list shows everyone who needs you on any floor. Click a name to walk over.
 
 ## Architecture
@@ -54,6 +57,17 @@ npm run dev        # http://127.0.0.1:5199
 - `src/world/city.ts` is the downtown outside the windows, with our own tower's façade. Each project floor is a real storey; the first is 12F, about 48 m up. Preview it on its own at `/dev/city-preview.html?view=north&elev=90`.
 - `src/world/daynight.ts` runs a day/night cycle on your real local time. It computes the sun's actual position for your time zone's city, or for `?lat=&lon=` if you pass them. After dark the sky fills with stars and a moon in its current phase, windows light up across town, and street lamps, headlights, taillights, tower beacons and the Ferris wheel come on. The office lighting also warms up. To preview a time, add `?time=21:30` to the URL (or `?timescale=600` to fast-forward), or run `dayNight.setTime("6:45")` in the console; `setTime(null)` goes back to live.
 - 3D models are scripted in Blender (`assets/blender/*.py`) and exported to `public/models/*.glb`. Rebuild them all with `./assets/blender/build_all.sh`; preview renders go to `assets/previews/`. In-game they're toon-shaded and instanced (`src/world/assets.ts`). A missing model falls back to a simple built-in shape.
+
+### The issue board
+
+Each floor's board has its own settings. Open them with **⚙ Board settings** in the board view, or ask the board manager (PM) to change them:
+
+- **Columns**: their names, colors, and order. Each column can mirror a GitLab list: issues with a given label, GitLab's Open list (open issues not in another column), or Closed issues.
+- **Wall board vs. board view**: pick which columns (up to 4) the big board on the office wall shows, and which the board you open with **B** shows. Each can show all tags on cards, none, or only the ones you name.
+- **Automation**: which column a ticket moves to when it's assigned, and when its agent finishes.
+- **GitLab**: paste a project or board URL (`https://gitlab.com/group/project/-/boards/12`, self-hosted works too) and an access token with `api` scope, or start the office with `GITLAB_TOKEN` set. The office syncs every 30 seconds. Moving, adding and editing tickets in the office updates GitLab, and deleting one closes the GitLab issue. **Use the GitLab board's lists as columns** copies the board's lists. Agent assignments stay in the office.
+
+The token is saved in `data/office.json` (git-ignored) and never sent to the page. Agents can read the full board API with `curl -s 'http://127.0.0.1:5199/api/board/guide?projectId=<id>'`.
 
 ### Adding things
 

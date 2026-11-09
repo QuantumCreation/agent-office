@@ -31,8 +31,10 @@ export interface CityEnv {
   tint: THREE.Color;
   hills: THREE.Color;
   clouds: THREE.Color;
-  /** 0 by day, 1 at night: window lights, street lamps, headlights. */
+  /** 0 by day, 1 at night: street lamps, headlights, and the darkening of window glass. */
   night: number;
+  /** 0 by day, 1 at full night: how far the office windows have come on (they light up one by one). */
+  windows: number;
 }
 
 export interface City {
@@ -262,9 +264,12 @@ const FCELLS = 8; // façade textures are 8 x 8 window cells
 
 interface FacadeTex {
   map: THREE.Texture;
+  /** Daytime emissive: sky reflections in the glass, no lights on. */
   emissive: THREE.Texture;
-  /** Emissive map after dark: dim glass and many more lit windows. */
-  night: THREE.Texture;
+  /** After dark: the color of every window that will light up at full night, black elsewhere. */
+  lights: THREE.Texture;
+  /** R: when each lit window comes on (0 = first at dusk, 1 = last at full night). G: window coverage. */
+  order: THREE.Texture;
 }
 
 interface PaneRec {
@@ -273,37 +278,56 @@ interface PaneRec {
   w: number;
   h: number;
   kind: Pane;
+  /** Has a round arch on top (the low-rise style), lit together with the pane. */
+  arch?: boolean;
 }
 /** While painting a façade, every window pane is recorded here so the night map can light it. */
 let paneLog: PaneRec[] | null = null;
 
-/** Night emissive: the day map dimmed to dark glass, then a share of the panes lit from inside. */
-function paintNight(E: HTMLCanvasElement, panes: PaneRec[], seed: number) {
-  const N = makeCanvas(E.width, E.height);
-  const n = N.x;
-  n.drawImage(E, 0, 0);
-  n.globalCompositeOperation = "multiply";
-  n.fillStyle = "#262c3c";
-  n.fillRect(0, 0, E.width, E.height);
-  n.globalCompositeOperation = "source-over";
+/**
+ * The windows lit after dark: a share of the panes, each with its own switch-on point so they come
+ * on one by one as dusk deepens. Panes painted as "lit" are the late workers: they come on first.
+ */
+function paintLights(width: number, height: number, panes: PaneRec[], seed: number) {
+  const L = makeCanvas(width, height), O = makeCanvas(width, height);
+  const n = L.x, o = O.x;
+  n.fillStyle = "#000";
+  n.fillRect(0, 0, width, height);
+  o.fillStyle = "#ff0000"; // never on, no coverage
+  o.fillRect(0, 0, width, height);
   const r = rng(seed);
   for (const p of panes) {
     const chance = p.kind === "lit" ? 1 : p.kind === "blind" ? 0.5 : p.kind === "glass" ? 0.38 : 0.12;
     if (r() > chance) continue;
     const v = r();
     const [hi, lo] = v < 0.58 ? ["#ffe0a0", "#f2b660"] : v < 0.84 ? ["#eef4ff", "#b9cdf2"] : ["#d79a58", "#9a6430"];
+    const when = p.kind === "lit" ? r() * 0.45 : 0.1 + r() * 0.9;
     const x = p.x + 1, y = p.y + 1, w = Math.max(1, p.w - 2), h = Math.max(1, p.h - 2);
     const g = n.createLinearGradient(0, y, 0, y + h);
     g.addColorStop(0, hi);
     g.addColorStop(1, lo);
     n.fillStyle = g;
     n.fillRect(x, y, w, h);
+    const ord = `rgb(${Math.round(when * 255)},255,0)`;
+    o.fillStyle = ord;
+    o.fillRect(x, y, w, h);
+    if (p.arch) {
+      const cx = p.x + p.w / 2, rad = p.w / 2;
+      for (const [c, fill] of [[n, hi], [o, ord]] as const) {
+        c.fillStyle = fill;
+        c.beginPath();
+        c.arc(cx, p.y + 1, rad - 1, Math.PI, 0);
+        c.fill();
+      }
+    }
     if (p.kind === "blind") {
       n.fillStyle = "#8a6a44";
       n.fillRect(x, y, w, h * (0.3 + r() * 0.35));
     }
   }
-  return repeatTex(N.c);
+  const order = repeatTex(O.c);
+  order.colorSpace = THREE.NoColorSpace; // data, not color: keep the switch-on points linear
+  return { lights: repeatTex(L.c), order };
 }
 
 function makeCanvas(w: number, h: number) {
@@ -325,15 +349,7 @@ type Pane = "glass" | "lit" | "blind" | "dark";
 /** Paints one pane into the diffuse (d) and emissive (e) canvases. */
 function pane(d: CanvasRenderingContext2D, e: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, kind: Pane, glassDiffuse = "#59606c") {
   paneLog?.push({ x, y, w, h, kind });
-  if (kind === "lit") {
-    d.fillStyle = "#fff3d0";
-    d.fillRect(x, y, w, h);
-    e.fillStyle = "#e8b862";
-    e.fillRect(x, y, w, h);
-    e.fillStyle = "#f7d792";
-    e.fillRect(x, y, w, h * 0.55);
-    return;
-  }
+  // By day every pane is glass; "lit" ones only differ after dark (see paintLights).
   d.fillStyle = glassDiffuse;
   d.fillRect(x, y, w, h);
   const g = e.createLinearGradient(0, y, 0, y + h);
@@ -405,22 +421,17 @@ function paintFacade(style: number): FacadeTex {
           // Glass curtain wall: diffuse glass is light so the building tint colors it.
           const kind = paneKind(r, 0.05, 0.08, 0.14);
           panes.push({ x: x + 3, y, w: 29, h: 54, kind }, { x: x + 34, y, w: C - 34, h: 54, kind });
-          paneLog = null;
-          if (kind === "lit") pane(d, e, x, y, C, C, "lit");
-          else {
-            d.fillStyle = kind === "dark" ? "#a9b5c6" : "#c9d5e4";
-            d.fillRect(x, y, C, C);
-            const g = e.createLinearGradient(0, y, 0, y + C);
-            g.addColorStop(0, kind === "dark" ? "#1c2c44" : "#33557f");
-            g.addColorStop(1, kind === "dark" ? "#101a2c" : "#1d3454");
-            e.fillStyle = g;
-            e.fillRect(x, y, C, C);
-            if (kind === "blind") {
-              e.fillStyle = "#6a6458";
-              e.fillRect(x, y, C, 22);
-            }
+          d.fillStyle = kind === "dark" ? "#a9b5c6" : "#c9d5e4";
+          d.fillRect(x, y, C, C);
+          const g = e.createLinearGradient(0, y, 0, y + C);
+          g.addColorStop(0, kind === "dark" ? "#1c2c44" : "#33557f");
+          g.addColorStop(1, kind === "dark" ? "#101a2c" : "#1d3454");
+          e.fillStyle = g;
+          e.fillRect(x, y, C, C);
+          if (kind === "blind") {
+            e.fillStyle = "#6a6458";
+            e.fillRect(x, y, C, 22);
           }
-          paneLog = panes;
           // Spandrel at the floor line, mullions.
           d.fillStyle = "#eef2f7";
           d.fillRect(x, y + 54, C, 10);
@@ -458,11 +469,12 @@ function paintFacade(style: number): FacadeTex {
             e.fillRect(ox + x - 3, y + 14, 24, 38);
             e.fillStyle = "#000";
             pane(d, e, x + ox, y + 22, 18, 27, kind);
-            d.fillStyle = kind === "lit" ? "#fff3d0" : "#59606c";
+            panes[panes.length - 1].arch = true;
+            d.fillStyle = "#59606c";
             d.beginPath();
             d.arc(x + ox + 9, y + 22, 9, Math.PI, 0);
             d.fill();
-            e.fillStyle = kind === "lit" ? "#f7d792" : "#7aa0d0";
+            e.fillStyle = "#7aa0d0";
             e.beginPath();
             e.arc(x + ox + 9, y + 22, 9, Math.PI, 0);
             e.fill();
@@ -489,7 +501,7 @@ function paintFacade(style: number): FacadeTex {
     e.globalCompositeOperation = "source-over";
   }
   paneLog = null;
-  return { map: repeatTex(D.c), emissive: repeatTex(E.c), night: paintNight(E.c, panes, 517 + style * 31) };
+  return { map: repeatTex(D.c), emissive: repeatTex(E.c), ...paintLights(S, S, panes, 517 + style * 31) };
 }
 
 /** Our own tower's curtain wall: 16 bays of 1.5 m x 8 storeys of 4 m (mullions match the office). */
@@ -534,11 +546,13 @@ function paintShell(): FacadeTex {
     e.fillRect(i * cw - 1, 0, 3, H);
   }
   paneLog = null;
-  return { map: repeatTex(D.c), emissive: repeatTex(E.c), night: paintNight(E.c, panes, 4243) };
+  return { map: repeatTex(D.c), emissive: repeatTex(E.c), ...paintLights(W, H, panes, 4243) };
 }
 
-/** Shared by every façade material: 0 shows the day emissive map, 1 the night one. */
+/** Shared by every façade material: 0 = daylight glass, 1 = glass dimmed for the night. */
 const nightMix = { value: 0 };
+/** Shared by every façade material: 0 = no windows lit, 1 = every window that lights at night is on. */
+const windowsOn = { value: 0 };
 
 function facadeMaterial(tex: FacadeTex, emissiveIntensity = 1) {
   const m = toon("#ffffff").clone();
@@ -548,16 +562,25 @@ function facadeMaterial(tex: FacadeTex, emissiveIntensity = 1) {
   m.emissive = new THREE.Color("#ffffff");
   m.emissiveIntensity = emissiveIntensity;
   m.onBeforeCompile = (shader) => {
-    shader.uniforms.nightEmissiveMap = { value: tex.night };
+    shader.uniforms.lightsMap = { value: tex.lights };
+    shader.uniforms.orderMap = { value: tex.order };
     shader.uniforms.nightMix = nightMix;
+    shader.uniforms.windowsOn = windowsOn;
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nuniform sampler2D nightEmissiveMap;\nuniform float nightMix;")
+      .replace(
+        "#include <common>",
+        "#include <common>\nuniform sampler2D lightsMap;\nuniform sampler2D orderMap;\nuniform float nightMix;\nuniform float windowsOn;",
+      )
       .replace(
         "#include <emissivemap_fragment>",
         `#ifdef USE_EMISSIVEMAP
-          vec3 dayE = texture2D(emissiveMap, vEmissiveMapUv).rgb;
-          vec3 nightE = texture2D(nightEmissiveMap, vEmissiveMapUv).rgb;
-          totalEmissiveRadiance *= mix(dayE, nightE, nightMix);
+          vec3 glassE = texture2D(emissiveMap, vEmissiveMapUv).rgb;
+          glassE *= mix(vec3(1.0), vec3(0.149, 0.173, 0.235), nightMix); // reflections fade with the sky
+          vec2 ord = texture2D(orderMap, vEmissiveMapUv).rg;
+          // Each window fades in over a short stretch once windowsOn passes its switch-on point.
+          float on = clamp((windowsOn * 1.06 - ord.r) / 0.06, 0.0, 1.0) * ord.g;
+          vec3 litE = texture2D(lightsMap, vEmissiveMapUv).rgb;
+          totalEmissiveRadiance *= mix(glassE, litE, on);
         #endif`,
       );
   };
@@ -1975,6 +1998,7 @@ export function buildCity(): City {
     cloudMat.color.copy(env.clouds);
     nightLevel = env.night;
     nightMix.value = env.night;
+    windowsOn.value = env.windows;
     for (const o of nightObjs) o.visible = env.night > 0.01;
     for (const { m, k } of glowMats) m.opacity = env.night * k;
   }

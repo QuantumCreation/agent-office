@@ -1,6 +1,7 @@
 // 2D canvas drawing for in-world displays: desk monitors, the issue board and the floor sign.
 
-import type { ActivityItem, AgentInfo, Issue, IssueStatus } from "../../shared/types.ts";
+import type { ActivityItem, AgentInfo, BoardSettings, Issue } from "../../shared/types.ts";
+import { inkOn, tagColor, viewColumns, visibleTags, WALL_MAX_COLUMNS } from "../../shared/board.ts";
 import { ACTIVITY_COLORS } from "./bloop.ts";
 import type { Monitor } from "./office.ts";
 
@@ -140,15 +141,15 @@ export function drawEmptyMonitor(mon: Monitor, label: string) {
   mon.texture.needsUpdate = true;
 }
 
-const COLUMNS: { key: IssueStatus; label: string; color: string }[] = [
-  { key: "todo", label: "To do", color: "#ffe680" },
-  { key: "doing", label: "Doing", color: "#9fd8ff" },
-  { key: "review", label: "Review", color: "#ffc0dd" },
-  { key: "done", label: "Done", color: "#b7f0b1" },
-];
-
-export function drawBoard(ctx: CanvasRenderingContext2D, issues: Issue[], agentName: (id: string) => string, pmName: string | null) {
+export function drawBoard(
+  ctx: CanvasRenderingContext2D,
+  issues: Issue[],
+  settings: BoardSettings & { labels?: { name: string; color: string }[] },
+  agentName: (id: string) => string,
+  pmName: string | null,
+) {
   const { width: w, height: h } = ctx.canvas;
+  const labels = settings.labels ?? [];
   ctx.fillStyle = "#fbfbf7";
   ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = "#3a3c4e";
@@ -157,34 +158,57 @@ export function drawBoard(ctx: CanvasRenderingContext2D, issues: Issue[], agentN
   ctx.font = "16px ui-rounded, system-ui, sans-serif";
   ctx.fillStyle = "#6a6e85";
   ctx.textAlign = "right";
-  ctx.fillText(pmName ? `managed by ${pmName}` : "no board manager yet · press E to set up", w - 18, 32);
+  const managed = pmName ? `managed by ${pmName}` : "no board manager yet · press E to set up";
+  ctx.fillText(settings.gitlab.enabled ? `${managed} · GitLab` : managed, w - 18, 32);
   ctx.textAlign = "left";
-  const colW = (w - 36) / 4;
-  COLUMNS.forEach((col, ci) => {
+  const columns = viewColumns(settings, settings.wall).slice(0, WALL_MAX_COLUMNS);
+  const colW = (w - 36) / Math.max(1, columns.length);
+  columns.forEach((col, ci) => {
     const x = 18 + ci * colW;
     ctx.fillStyle = "#e9e9f0";
     ctx.fillRect(x + 4, 48, colW - 8, h - 60);
     ctx.fillStyle = "#3a3c4e";
     ctx.font = "bold 17px ui-rounded, system-ui, sans-serif";
-    const list = issues.filter((i) => i.status === col.key);
-    ctx.fillText(`${col.label} (${list.length})`, x + 12, 70);
+    const list = issues.filter((i) => i.status === col.id);
+    const header = wrap(ctx, `${col.title} (${list.length})`, colW - 24, 1)[0] ?? "";
+    ctx.fillText(header, x + 12, 70);
     const cardH = 52;
     const maxCards = Math.floor((h - 90) / (cardH + 6));
     list.slice(0, maxCards).forEach((issue, i) => {
       const y = 80 + i * (cardH + 6);
+      const cw = colW - 20;
       ctx.save();
       ctx.translate(x + 10 + (i % 2 ? 2 : -1), y);
       ctx.rotate(((i * 37) % 7 - 3) * 0.004);
       ctx.fillStyle = col.color;
-      ctx.fillRect(0, 0, colW - 20, cardH);
-      ctx.fillStyle = "#2e3040";
+      ctx.fillRect(0, 0, cw, cardH);
+      ctx.fillStyle = inkOn(col.color);
       ctx.font = "bold 13px ui-rounded, system-ui, sans-serif";
-      const lines = wrap(ctx, issue.title, colW - 32, 2);
+      const lines = wrap(ctx, issue.title, cw - 12, 2);
       lines.forEach((l, li) => ctx.fillText(l, 6, 17 + li * 15));
+      let left = 6;
       if (issue.assignee) {
         ctx.font = "11px ui-rounded, system-ui, sans-serif";
-        ctx.fillStyle = "#555a73";
-        ctx.fillText("@" + agentName(issue.assignee), 6, cardH - 5);
+        ctx.globalAlpha = 0.75;
+        const who = "@" + agentName(issue.assignee);
+        ctx.fillText(who, 6, cardH - 5);
+        ctx.globalAlpha = 1;
+        left += ctx.measureText(who).width + 6;
+      }
+      // Tags, right-aligned on the bottom line, as many as fit.
+      ctx.font = "bold 10px ui-rounded, system-ui, sans-serif";
+      let right = cw - 5;
+      for (const tag of visibleTags(issue, settings.wall, settings)) {
+        const text = tag.length > 14 ? tag.slice(0, 13) + "…" : tag;
+        const tw = ctx.measureText(text).width + 8;
+        if (right - tw < left) break;
+        const bg = tagColor(tag, labels);
+        ctx.fillStyle = bg;
+        roundRect(ctx, right - tw, cardH - 16, tw, 13, 6);
+        ctx.fill();
+        ctx.fillStyle = inkOn(bg);
+        ctx.fillText(text, right - tw + 4, cardH - 6);
+        right -= tw + 3;
       }
       ctx.restore();
     });

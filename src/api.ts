@@ -1,6 +1,6 @@
 // Client for the office bridge (server/bridge.ts).
 
-import type { OfficeSnapshot, ThreadDetail, Issue } from "../shared/types.ts";
+import type { BoardState, OfficeSnapshot, ThreadDetail, Issue } from "../shared/types.ts";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -42,10 +42,16 @@ export const api = {
   meeting: (threadIds: string[], text: string) => call<{ sent: number }>("POST", "/api/meeting", { threadIds, text }),
   addProject: (path: string) => call("POST", "/api/projects", { path }),
   ensurePm: (projectId: string) => call<{ threadId: string }>("POST", "/api/pm", { projectId }),
-  createIssue: (body: { projectId: string; title: string; body?: string }) =>
+  createIssue: (body: { projectId: string; title: string; body?: string; labels?: string[]; status?: string }) =>
     call<Issue>("POST", "/api/issues", { ...body, createdBy: "boss" }),
-  updateIssue: (id: string, body: Partial<Issue>) => call<Issue>("PATCH", `/api/issues/${id}`, body),
-  deleteIssue: (id: string) => call("DELETE", `/api/issues/${id}`),
-  assignIssue: (id: string, threadId: string) => call<Issue>("POST", `/api/issues/${id}/assign`, { threadId }),
-  hireForIssue: (id: string, desk?: number) => call("POST", `/api/issues/${id}/hire`, { desk }),
+  updateIssue: (id: string, body: Partial<Issue>) => call<Issue>("PATCH", `/api/issues/${encodeURIComponent(id)}`, body),
+  deleteIssue: (id: string) => call("DELETE", `/api/issues/${encodeURIComponent(id)}`),
+  assignIssue: (id: string, threadId: string) =>
+    call<Issue & { warning?: string }>("POST", `/api/issues/${encodeURIComponent(id)}/assign`, { threadId }),
+  hireForIssue: (id: string, desk?: number) =>
+    call<{ warning?: string }>("POST", `/api/issues/${encodeURIComponent(id)}/hire`, { desk }),
+  updateBoardSettings: (projectId: string, patch: Record<string, unknown>) =>
+    call<BoardState>("PATCH", "/api/board/settings", { ...patch, projectId }),
+  syncBoard: (projectId: string) => call<BoardState>("POST", "/api/board/sync", { projectId }),
+  importBoardColumns: (projectId: string) => call<BoardState>("POST", "/api/board/import", { projectId }),
 };

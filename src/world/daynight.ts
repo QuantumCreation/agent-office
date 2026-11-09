@@ -207,6 +207,7 @@ export class DayNight {
     hills: new THREE.Color(),
     clouds: new THREE.Color(),
     night: 0,
+    windows: 0,
   };
   readonly location = guessLocation();
   /** Sun elevation in degrees, refreshed by update(). */
@@ -293,6 +294,8 @@ export class DayNight {
 
     // Lights come on around sunset and stay on until after sunrise.
     env.night = 1 - smooth(-6, 4, el);
+    // Office windows stay dark by day, then come on one by one through dusk until about nautical dusk.
+    env.windows = 1 - smooth(-12, 1, el);
     env.stars = 1 - smooth(-14, -3, el);
     this.daylight = smooth(-8, 10, el);
 
