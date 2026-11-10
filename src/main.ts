@@ -332,7 +332,7 @@ function openElevator() {
             },
           },
           h("span", { class: "fnum", style: `background:${themeFor(p.id).accent}` }, `${floorNumber(p.id)}F`),
-          h("span", { class: "ftitle" }, h("strong", {}, p.title), h("small", {}, p.workspaceRoot)),
+          h("span", { class: "ftitle" }, h("strong", {}, p.title), h("small", {}, p.backend === "claude" ? `Claude Code · ${p.workspaceRoot}` : p.workspaceRoot)),
           h(
             "span",
             { class: "fstats" },
@@ -345,6 +345,15 @@ function openElevator() {
       }),
   );
   const pathIn = h("input", { placeholder: "/path/to/project", onkeydown: (e: KeyboardEvent) => e.stopPropagation() });
+  // Without T3 Code running, offer Claude Code first.
+  const t3Down = snapshot.backends ? !snapshot.backends.t3.ok : !snapshot.connected;
+  const backendIn = h(
+    "select",
+    { title: "Which app runs this floor's agents" },
+    h("option", { value: "t3" }, "T3 Code"),
+    h("option", { value: "claude" }, "Claude Code"),
+  ) as HTMLSelectElement;
+  backendIn.value = t3Down ? "claude" : "t3";
   const add = h(
     "form",
     {
@@ -353,7 +362,7 @@ function openElevator() {
         e.preventDefault();
         if (!pathIn.value.trim()) return;
         try {
-          await api.addProject(pathIn.value.trim());
+          await api.addProject(pathIn.value.trim(), backendIn.value === "claude" ? "claude" : undefined);
           toast("New floor built! It'll show up in the elevator in a moment.", "good");
           closeModal();
         } catch (err) {
@@ -362,9 +371,13 @@ function openElevator() {
       },
     },
     pathIn,
+    backendIn,
     h("button", { class: "btn", type: "submit" }, "🏗 Build floor"),
   );
-  openModal("Elevator", h("div", {}, h("p", { class: "muted" }, "Each floor is a T3 Code project."), list, h("h3", {}, "Open a new floor"), add));
+  openModal(
+    "Elevator",
+    h("div", {}, h("p", { class: "muted" }, "Each floor is a T3 Code project or a Claude Code folder."), list, h("h3", {}, "Open a new floor"), add),
+  );
 }
 
 // ------------------------------------------------------------------ agents on the floor
@@ -568,7 +581,10 @@ function onSnapshot(s: OfficeSnapshot) {
   const prev = snapshot;
   snapshot = s;
   bannerEl.classList.toggle("hidden", s.connected);
-  if (!s.connected) bannerEl.textContent = `Can't reach T3 Code (${s.error ?? "unknown error"}). Is the T3 Code app running?`;
+  if (!s.connected) {
+    bannerEl.textContent = `Can't reach T3 Code (${s.error ?? "unknown error"}). Is the T3 Code app running?`;
+    if (s.backends) bannerEl.textContent += " Or take the elevator (F) to open a Claude Code floor in any folder.";
+  }
 
   // Notifications for agents that just finished or need a hand.
   if (!firstSnapshot) {
@@ -816,7 +832,9 @@ function openHire(desk: number) {
   if (!floorId) return;
   const pid = floorId;
   const models = new Map<string, string>();
-  for (const a of snapshot.agents) if (a.model && a.provider) models.set(`${a.provider}|${a.model}`, `${a.model} (${a.provider})`);
+  const claudeFloor = snapshot.projects.find((p) => p.id === pid)?.backend === "claude";
+  if (claudeFloor) for (const m of ["opus", "sonnet", "haiku"]) models.set(`claude-code|${m}`, `${m[0].toUpperCase()}${m.slice(1)} (Claude Code)`);
+  else for (const a of snapshot.agents) if (a.model && a.provider && a.backend !== "claude") models.set(`${a.provider}|${a.model}`, `${a.model} (${a.provider})`);
   const task = h("textarea", { rows: 5, placeholder: "What should they work on? This becomes their first message.", onkeydown: (e: KeyboardEvent) => e.stopPropagation() });
   const title = h("input", { placeholder: "Job title (optional, defaults to the task's first line)", onkeydown: (e: KeyboardEvent) => e.stopPropagation() });
   const model = h("select", {}, h("option", { value: "" }, "Project default model"), [...models].map(([v, l]) => h("option", { value: v }, l)));
