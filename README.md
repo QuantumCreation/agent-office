@@ -56,6 +56,10 @@ rasterized into a G-buffer, then every pixel traces rays against a BVH of the wh
   virtual image) and an edge-aware à-trous denoiser.
 - Synthwave set dressing: a cyan ceiling cove along the glazing and pink underglow beneath the desk benches.
 
+![Chrome sculpture in the lobby](docs/rt/lobby-chrome.jpg)
+![Neon noir mood](docs/rt/neon-noir.jpg)
+![Afternoon sun through the curtain wall](docs/rt/afternoon-sun.jpg)
+
 | Key | |
 |---|---|
 | **R** | Ray tracing on/off (compare with the original toon look) |
