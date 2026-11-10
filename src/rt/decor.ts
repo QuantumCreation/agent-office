@@ -1,6 +1,7 @@
 // Set dressing that shows off the ray tracer: synthwave neon (ceiling cove along the glazing,
 // underglow beneath the desk benches), and a mirror-chrome sculpture in the lobby.
 // Every neon strip is a real area light: it casts ray-traced soft shadows and shows up in reflections.
+// It's only there while ray tracing is on, so the original look is unchanged.
 
 import * as THREE from "three";
 import * as plan from "../world/floorplan.ts";
@@ -18,7 +19,7 @@ function neonMaterial(color: string, strength: number) {
 }
 
 /** A thin emitting strip from a to b (xz), at height y, facing `normal`, split into short lights. */
-function strip(parent: THREE.Object3D, mat: THREE.Material, a: [number, number], b: [number, number], y: number, width: number, normal: THREE.Vector3) {
+function strip(parent: THREE.Object3D, mat: THREE.Material, a: [number, number], b: [number, number], y: number, width: number, normal: THREE.Vector3, out: THREE.Object3D[]) {
   const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
   const n = Math.max(1, Math.round(len / SEGMENT));
   const dir = new THREE.Vector3(b[0] - a[0], 0, b[1] - a[1]).normalize();
@@ -35,10 +36,16 @@ function strip(parent: THREE.Object3D, mat: THREE.Material, a: [number, number],
     m.castShadow = false;
     m.receiveShadow = false;
     parent.add(m);
+    out.push(m);
   }
 }
 
-export function addRaytracedDecor(office: Office) {
+export interface RaytracedDecor {
+  setVisible(on: boolean): void;
+}
+
+export function addRaytracedDecor(office: Office): RaytracedDecor {
+  const added: THREE.Object3D[] = [];
   const P = plan.PLATE;
   const H = plan.CEILING_HEIGHT;
   const down = new THREE.Vector3(0, -1, 0);
@@ -49,17 +56,17 @@ export function addRaytracedDecor(office: Office) {
   const cove = neonMaterial(CYAN, 7);
   const inset = plan.EXTERIOR_WALL / 2 + 0.22;
   const x0 = P.minX + inset, x1 = P.maxX - inset, z0 = P.minZ + inset, z1 = P.maxZ - inset;
-  strip(office.ceiling, cove, [x0, z0], [x1, z0], H - 0.04, 0.07, down);
-  strip(office.ceiling, cove, [x1, z0], [x1, z1], H - 0.04, 0.07, down);
-  strip(office.ceiling, cove, [x1, z1], [x0, z1], H - 0.04, 0.07, down);
-  strip(office.ceiling, cove, [x0, z1], [x0, z0], H - 0.04, 0.07, down);
+  strip(office.ceiling, cove, [x0, z0], [x1, z0], H - 0.04, 0.07, down, added);
+  strip(office.ceiling, cove, [x1, z0], [x1, z1], H - 0.04, 0.07, down, added);
+  strip(office.ceiling, cove, [x1, z1], [x0, z1], H - 0.04, 0.07, down, added);
+  strip(office.ceiling, cove, [x0, z1], [x0, z0], H - 0.04, 0.07, down, added);
 
   // Underglow beneath every desk bench: pink pools on the polished floor.
   const under = neonMaterial(PINK, 9);
   const zs = plan.BENCH_DESK_Z;
   const za = Math.min(...zs) - plan.DESK_W / 2 + 0.15;
   const zb = Math.max(...zs) + plan.DESK_W / 2 - 0.15;
-  for (const cx of plan.BENCH_CENTERS_X) strip(office.root, under, [cx, za], [cx, zb], 0.66, 0.05, down);
+  for (const cx of plan.BENCH_CENTERS_X) strip(office.root, under, [cx, za], [cx, zb], 0.66, 0.05, down, added);
 
   // Lobby sculpture: a mirror-chrome sphere on a black glass plinth, ringed by a cyan floor light.
   const sx = -1.6, sz = 6.3;
@@ -76,5 +83,16 @@ export function addRaytracedDecor(office: Office) {
   ring.rotation.x = -Math.PI / 2;
   ring.position.set(sx, 0.006, sz);
   office.root.add(plinth, sphere, ring);
-  office.colliders.push({ minX: sx - 0.36, maxX: sx + 0.36, minZ: sz - 0.36, maxZ: sz + 0.36 });
+  added.push(plinth, sphere, ring);
+  // You bump into the sculpture only while it's there. (Agents' paths always step round the spot.)
+  const collider = { minX: sx - 0.36, maxX: sx + 0.36, minZ: sz - 0.36, maxZ: sz + 0.36 };
+  office.colliders.push(collider);
+  return {
+    setVisible(on) {
+      for (const o of added) o.visible = on;
+      const i = office.colliders.indexOf(collider);
+      if (on && i < 0) office.colliders.push(collider);
+      if (!on && i >= 0) office.colliders.splice(i, 1);
+    },
+  };
 }

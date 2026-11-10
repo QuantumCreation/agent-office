@@ -3,8 +3,10 @@
 // office plus analytic spheres for the Bloops.
 
 import { BVHShaderGLSL } from "three-mesh-bvh";
+import { CHAIR_STASH } from "./bake.ts";
 
 export const MAX_BLOOPS = 64;
+export const MAX_MOVING_CHAIRS = 8;
 export const LIGHTS_PER_CELL = 24;
 
 export const FULLSCREEN_VERT = /* glsl */ `
@@ -19,6 +21,7 @@ void main() {
 export const RT_COMMON = /* glsl */ `
 #define PI 3.14159265359
 #define MAX_BLOOPS ${MAX_BLOOPS}
+#define MAX_MOVING ${MAX_MOVING_CHAIRS}
 #define LIGHTS_PER_CELL ${LIGHTS_PER_CELL}
 
 ${BVHShaderGLSL.common_functions}
@@ -35,6 +38,15 @@ uniform vec4 uBloopBody[MAX_BLOOPS];    // center, radius
 uniform vec4 uBloopColor[MAX_BLOOPS];   // albedo, roughness
 uniform vec4 uBloopBulb[MAX_BLOOPS];    // center, radius (0 = off)
 uniform vec4 uBloopBulbColor[MAX_BLOOPS];
+
+// Swivel chairs are baked facing their desks (rtMat.w = 2 + id). While one is turned, its baked
+// copy is skipped and rays near it are moved into the frame of one chair stashed below the office.
+uniform int uChairMoving;              // bit per chair id that is away from its baked pose
+uniform int uMovCount;
+uniform vec4 uMovA[MAX_MOVING];        // swivel axis now (xyz), chair id
+uniform vec4 uMovB[MAX_MOVING];        // cos, sin of the chair's yaw
+uniform vec4 uMovS[MAX_MOVING];        // bounding sphere now
+#define CHAIR_STASH vec3(${CHAIR_STASH.x.toFixed(1)}, ${CHAIR_STASH.y.toFixed(1)}, ${CHAIR_STASH.z.toFixed(1)})
 
 uniform float uGroupScale[8];
 uniform samplerCube uEnv;
@@ -141,6 +153,120 @@ float sphereHit(vec3 ro, vec3 rd, vec4 s) {
   return -b - sqrt(h);
 }
 
+vec3 rotY(vec3 v, float c, float s) { return vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c); }
+
+// Where a ray crosses a sphere (t0 clamped to 0).
+bool sphereSpan(vec3 ro, vec3 rd, vec4 s, out float t0, out float t1) {
+  vec3 oc = ro - s.xyz;
+  float b = dot(oc, rd);
+  float h = b * b - (dot(oc, oc) - s.w * s.w);
+  t0 = 0.0;
+  t1 = -1.0;
+  if (h < 0.0) return false;
+  h = sqrt(h);
+  t0 = max(-b - h, 0.0);
+  t1 = -b + h;
+  return t1 > 0.0;
+}
+
+// A ray near turned chair k, moved onto the stashed chair (same t along it).
+void toChair(int k, vec3 ro, vec3 rd, out vec3 lo, out vec3 ld) {
+  lo = rotY(ro - uMovA[k].xyz, uMovB[k].x, -uMovB[k].y) + CHAIR_STASH;
+  ld = rotY(rd, uMovB[k].x, -uMovB[k].y);
+}
+
+// rtMat.w: 0 plain, 1 light-listed emitter, 2 + id a swivel chair (id 31: the stashed one).
+// stash false: the office, minus chairs that are turned right now. stash true: only the stashed chair.
+bool skipTri(float w, bool stash) {
+  if (w < 1.5) return stash;
+  int id = int(w - 2.0 + 0.5);
+  if (id >= 31) return !stash;
+  return stash || ((uChairMoving >> id) & 1) == 1;
+}
+
+// Nearest triangle closer than tMax (three-mesh-bvh's traversal, filtered by skipTri).
+bool bvhFirst(bool stash, vec3 ro, vec3 rd, float tMax, out uvec4 fi, out vec3 fn, out vec3 bc, out float dist) {
+  int ptr = 0;
+  uint stack[BVH_STACK_DEPTH];
+  stack[0] = 0u;
+  dist = tMax;
+  bool found = false;
+  while (ptr > -1 && ptr < BVH_STACK_DEPTH) {
+    uint node = stack[ptr];
+    ptr--;
+    float boundsDist;
+    if (!intersectsBVHNodeBounds(ro, rd, bvh.bvhBounds, node, boundsDist) || boundsDist > dist) continue;
+    uvec2 info = uTexelFetch1D(bvh.bvhContents, node).xy;
+    if (bool(info.x & 0xffff0000u)) {
+      uint count = info.x & 0x0000ffffu;
+      uint offset = info.y;
+      for (uint i = offset, l = offset + count; i < l; i++) {
+        uvec3 idx = uTexelFetch1D(bvh.index, i).xyz;
+        vec3 a = texelFetch1D(bvh.position, idx.x).rgb;
+        vec3 b = texelFetch1D(bvh.position, idx.y).rgb;
+        vec3 c = texelFetch1D(bvh.position, idx.z).rgb;
+        vec3 bary, nrm;
+        float d, s;
+        if (intersectsTriangle(ro, rd, a, b, c, bary, nrm, d, s) && d < dist
+            && !skipTri(texelFetch1D(attrMat, idx.x).w, stash)) {
+          found = true;
+          dist = d;
+          fi = uvec4(idx, i);
+          fn = nrm;
+          bc = bary;
+        }
+      }
+    } else {
+      uint left = node + 1u;
+      uint right = info.y;
+      bool leftToRight = rd[info.x & 0x0000ffffu] >= 0.0;
+      ptr++;
+      stack[ptr] = leftToRight ? right : left;
+      ptr++;
+      stack[ptr] = leftToRight ? left : right;
+    }
+  }
+  return found;
+}
+
+// Any blocker closer than tMax. Light-listed emitters don't block their own light.
+bool bvhAny(bool stash, vec3 ro, vec3 rd, float tMax) {
+  int ptr = 0;
+  uint stack[BVH_STACK_DEPTH];
+  stack[0] = 0u;
+  while (ptr > -1 && ptr < BVH_STACK_DEPTH) {
+    uint node = stack[ptr];
+    ptr--;
+    float boundsDist;
+    if (!intersectsBVHNodeBounds(ro, rd, bvh.bvhBounds, node, boundsDist) || boundsDist > tMax) continue;
+    uvec2 info = uTexelFetch1D(bvh.bvhContents, node).xy;
+    if (bool(info.x & 0xffff0000u)) {
+      uint count = info.x & 0x0000ffffu;
+      uint offset = info.y;
+      for (uint i = offset, l = offset + count; i < l; i++) {
+        uvec3 idx = uTexelFetch1D(bvh.index, i).xyz;
+        vec3 a = texelFetch1D(bvh.position, idx.x).rgb;
+        vec3 b = texelFetch1D(bvh.position, idx.y).rgb;
+        vec3 c = texelFetch1D(bvh.position, idx.z).rgb;
+        vec3 bary, nrm;
+        float d, s;
+        if (intersectsTriangle(ro, rd, a, b, c, bary, nrm, d, s) && d > 1e-4 && d < tMax) {
+          float w = texelFetch1D(attrMat, idx.x).w;
+          if ((w < 0.5 || w > 1.5) && !skipTri(w, stash)) return true;
+        }
+      }
+    } else {
+      uint left = node + 1u;
+      uint right = info.y;
+      ptr++;
+      stack[ptr] = right;
+      ptr++;
+      stack[ptr] = left;
+    }
+  }
+  return false;
+}
+
 bool traceScene(vec3 ro, vec3 rd, out Hit h) {
   h.t = 1e20;
   h.n = vec3(0.0, 1.0, 0.0);
@@ -153,22 +279,39 @@ bool traceScene(vec3 ro, vec3 rd, out Hit h) {
   bool found = false;
   uvec4 fi;
   vec3 fn, bc;
-  float side, dist;
-  if (bvhIntersectFirstHit(bvh, ro, rd, fi, fn, bc, side, dist)) {
-    found = true;
+  float dist;
+  int mov = -1;
+  found = bvhFirst(false, ro, rd, 1e20, fi, fn, bc, dist);
+  for (int k = 0; k < MAX_MOVING; k++) {
+    if (k >= uMovCount) break;
+    float t0, t1;
+    if (!sphereSpan(ro, rd, uMovS[k], t0, t1) || (found && t0 > dist)) continue;
+    vec3 lo, ld;
+    toChair(k, ro, rd, lo, ld);
+    uvec4 fi2;
+    vec3 fn2, bc2;
+    float d2;
+    if (bvhFirst(true, lo, ld, found ? min(dist, t1) : t1, fi2, fn2, bc2, d2)) {
+      found = true;
+      fi = fi2; fn = fn2; bc = bc2; dist = d2;
+      mov = k;
+    }
+  }
+  if (found) {
     h.t = dist;
     vec3 sn = textureSampleBarycoord(attrNormal, bc, fi.xyz).xyz;
     sn = dot(sn, sn) > 1e-8 ? normalize(sn) : fn;
-    if (dot(sn, rd) > 0.0) sn = -sn;
-    h.n = sn;
+    if (mov >= 0) sn = rotY(sn, uMovB[mov].x, uMovB[mov].y);
     vec4 c = texelFetch1D(attrColor, fi.x);
     vec4 m = texelFetch1D(attrMat, fi.x);
+    if (dot(sn, rd) > 0.0) sn = -sn;
+    h.n = sn;
     h.albedo = c.rgb;
     h.emissive = c.a;
     h.rough = m.x;
     h.metal = m.y;
     h.group = m.z;
-    h.lightFlag = m.w;
+    h.lightFlag = m.w > 1.5 ? 0.0 : m.w;
   }
   for (int i = 0; i < MAX_BLOOPS; i++) {
     if (i >= uBloopCount) break;
@@ -202,44 +345,21 @@ bool traceScene(vec3 ro, vec3 rd, out Hit h) {
   return found;
 }
 
-// Any-hit test for shadow rays. Light-listed emitters don't block their own light.
+// Any-hit test for shadow rays: Bloops, the office, and chairs that are turned right now.
 bool occluded(vec3 ro, vec3 rd, float tMax) {
   for (int i = 0; i < MAX_BLOOPS; i++) {
     if (i >= uBloopCount) break;
     float t = sphereHit(ro, rd, uBloopBody[i]);
     if (t > 0.0 && t < tMax) return true;
   }
-  int ptr = 0;
-  uint stack[BVH_STACK_DEPTH];
-  stack[0] = 0u;
-  while (ptr > -1 && ptr < BVH_STACK_DEPTH) {
-    uint node = stack[ptr];
-    ptr--;
-    float boundsDist;
-    if (!intersectsBVHNodeBounds(ro, rd, bvh.bvhBounds, node, boundsDist) || boundsDist > tMax) continue;
-    uvec2 info = uTexelFetch1D(bvh.bvhContents, node).xy;
-    if (bool(info.x & 0xffff0000u)) {
-      uint count = info.x & 0x0000ffffu;
-      uint offset = info.y;
-      for (uint i = offset, l = offset + count; i < l; i++) {
-        uvec3 idx = uTexelFetch1D(bvh.index, i).xyz;
-        vec3 a = texelFetch1D(bvh.position, idx.x).rgb;
-        vec3 b = texelFetch1D(bvh.position, idx.y).rgb;
-        vec3 c = texelFetch1D(bvh.position, idx.z).rgb;
-        vec3 bary, nrm;
-        float d, s;
-        if (intersectsTriangle(ro, rd, a, b, c, bary, nrm, d, s) && d > 1e-4 && d < tMax) {
-          if (texelFetch1D(attrMat, idx.x).w < 0.5) return true;
-        }
-      }
-    } else {
-      uint left = node + 1u;
-      uint right = info.y;
-      ptr++;
-      stack[ptr] = right;
-      ptr++;
-      stack[ptr] = left;
-    }
+  if (bvhAny(false, ro, rd, tMax)) return true;
+  for (int k = 0; k < MAX_MOVING; k++) {
+    if (k >= uMovCount) break;
+    float t0, t1;
+    if (!sphereSpan(ro, rd, uMovS[k], t0, t1) || t0 > tMax) continue;
+    vec3 lo, ld;
+    toChair(k, ro, rd, lo, ld);
+    if (bvhAny(true, lo, ld, min(tMax, t1))) return true;
   }
   return false;
 }

@@ -39,10 +39,13 @@ managers still hear when their agents finish. Click the Dock icon to bring the w
 Desks, the issue board, managers and settings live in `~/Library/Application Support/Agent Office/office.json`,
 shared by the app, `npm run dev` and `npm start`. Set `AGENT_OFFICE_DATA` to use another file.
 
-## Real-time ray tracing ⚡
+## Real-time ray tracing ⚡ (optional)
 
-This fork renders the office with a hybrid real-time ray tracer (`src/rt/`). The office and the Bloops are
-rasterized into a G-buffer, then every pixel traces rays against a BVH of the whole office
+Tick **⚡ Ray tracing** at the bottom left (or press **G**) to render the office with a hybrid real-time ray tracer
+(`src/rt/`). It's off by default and remembered per browser; while it's off the office looks and runs exactly as
+before, and nothing is built for it until you first turn it on. It wants a decent GPU.
+
+The office and the Bloops are rasterized into a G-buffer, then every pixel traces rays against a BVH of the whole office
 ([three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh), built in a worker) plus analytic spheres for every Bloop:
 
 - **Reflections**: polished marble, tile, wood and resin floors, mirror-steel lift doors, a chrome sculpture in the lobby,
@@ -54,7 +57,9 @@ rasterized into a G-buffer, then every pixel traces rays against a BVH of the wh
   onto desks and neighbours, so you can see who needs you across a dark floor.
 - **One bounce of global illumination**, temporal accumulation (with mirror reflections reprojected through their
   virtual image) and an edge-aware à-trous denoiser.
-- Synthwave set dressing: a cyan ceiling cove along the glazing and pink underglow beneath the desk benches.
+- Synthwave set dressing while it's on: a cyan ceiling cove along the glazing and pink underglow beneath the desk benches.
+- Swivel chairs are baked facing their desks; while one turns, rays near it are moved into the frame of a spare chair
+  stashed in the BVH, so turned chairs keep exact shadows and reflections without rebuilding anything.
 
 ![Chrome sculpture in the lobby](docs/rt/lobby-chrome.jpg)
 ![Neon noir mood](docs/rt/neon-noir.jpg)
@@ -62,13 +67,14 @@ rasterized into a G-buffer, then every pixel traces rays against a BVH of the wh
 
 | Key | |
 |---|---|
-| **R** | Ray tracing on/off (compare with the original toon look) |
+| **G** | Ray tracing on/off (same as the checkbox; compare with the original toon look) |
 | **L** | Lighting mood: *Live* (follows the real time of day), *Neon noir*, *Lights out* |
 | **X** | Debug views: final, diffuse light, reflections, normals, roughness/metal |
 | **N** | Denoiser on/off (see the raw 1-sample rays) |
 
-`?rt=0` starts in raster mode. Without T3 Code the office fills with demo agents whose status changes every few
-seconds (`?demo=0` turns that off). Runs at ~230 fps at 1280×720 and ~115 fps at 2560×1440 on an RTX 5090.
+`?rt=1` / `?rt=0` override the checkbox for one visit. `?demo=1` fills an office with no agents with demo Bloops whose
+status changes every few seconds, handy for trying it out. Runs at ~230 fps at 1280×720 and ~115 fps at 2560×1440 on
+an RTX 5090.
 
 ## How it maps to T3 Code
 

@@ -15,7 +15,8 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { FullScreenQuad, Pass } from "three/addons/postprocessing/Pass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { bakeScene, LIGHT_RECT, type Bake, type RTLight } from "./bake.ts";
+import { bakeScene, LIGHT_RECT, MAX_CHAIR_IDS, type Bake, type RTLight } from "./bake.ts";
+import type { MovingChair } from "../world/chairs.ts";
 import { classify, textureAverage } from "./materials.ts";
 import { MOODS, liveGroups } from "./moods.ts";
 import * as plan from "../world/floorplan.ts";
@@ -29,6 +30,7 @@ import {
   GLASS_VERT,
   LIGHTS_PER_CELL,
   MAX_BLOOPS,
+  MAX_MOVING_CHAIRS,
   TEMPORAL_FRAG,
   TRACE_FRAG,
 } from "./glsl.ts";
@@ -53,6 +55,8 @@ export interface RTHost {
   sky(): { sunDir: THREE.Vector3; sunElevation: number; moonDir: THREE.Vector3; moon: number; night: number };
   /** Every Bloop that should appear in reflections and cast shadows (including the player's). */
   bloops(): { root: THREE.Object3D; probe(out: BloopProbe): void }[];
+  /** Swivel chairs turned away from their desks right now. */
+  movingChairs(): MovingChair[];
   /** Changes whenever the office geometry changes (floor theme, cutaway view). */
   bakeKey(): string;
 }
@@ -149,6 +153,11 @@ export class RayTracer {
     uBloopColor: { value: Array.from({ length: MAX_BLOOPS }, () => new THREE.Vector4()) },
     uBloopBulb: { value: Array.from({ length: MAX_BLOOPS }, () => new THREE.Vector4()) },
     uBloopBulbColor: { value: Array.from({ length: MAX_BLOOPS }, () => new THREE.Vector4()) },
+    uChairMoving: { value: 0 },
+    uMovCount: { value: 0 },
+    uMovA: { value: Array.from({ length: MAX_MOVING_CHAIRS }, () => new THREE.Vector4()) },
+    uMovB: { value: Array.from({ length: MAX_MOVING_CHAIRS }, () => new THREE.Vector4()) },
+    uMovS: { value: Array.from({ length: MAX_MOVING_CHAIRS }, () => new THREE.Vector4()) },
     uGroupScale: { value: [1, 1, 1, 1, 1, 1, 1, 1] },
     uEnv: { value: this.envRT.texture as THREE.Texture },
     uEnvScale: { value: 1 },
@@ -384,6 +393,22 @@ export class RayTracer {
       n++;
     }
     s.uBloopCount.value = n;
+
+    // Turned chairs (nearest first): skip their baked copy and trace them in their own frame.
+    let mask = 0;
+    let m = 0;
+    const cam = host.camera.position;
+    const moving = host.movingChairs().sort((p, q) => p.center.distanceToSquared(cam) - q.center.distanceToSquared(cam));
+    for (const c of this.bake?.hasChair ? moving : []) {
+      if (m >= MAX_MOVING_CHAIRS || c.id >= MAX_CHAIR_IDS) continue;
+      mask |= 1 << c.id;
+      s.uMovA.value[m].set(c.pivot.x, c.pivot.y, c.pivot.z, c.id);
+      s.uMovB.value[m].set(Math.cos(c.yaw), Math.sin(c.yaw), 0, 0);
+      s.uMovS.value[m].set(c.center.x, c.center.y, c.center.z, c.radius);
+      m++;
+    }
+    s.uChairMoving.value = mask;
+    s.uMovCount.value = m;
 
     // Lights: baked emitters (+ live monitor colours) and the bulbs.
     const baked = this.bake?.lights ?? [];

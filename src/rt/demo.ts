@@ -59,7 +59,7 @@ export class DemoOffice {
 
   constructor() {
     const q = new URLSearchParams(location.search);
-    this.enabled = q.get("demo") !== "0";
+    this.enabled = q.get("demo") === "1";
     const now = new Date().toISOString();
     this.agents = TASKS.map(([title, activity], i) => ({
       id: `demo-agent-${i + 1}`,

@@ -84,7 +84,7 @@ const dayNight = new DayNight(city, { hemi, ambient, key: sun });
 const assetLib = new AssetLibrary(accentMaterial);
 await assetLib.preload(OFFICE_ASSETS);
 const office: Office = buildOffice(assetLib);
-addRaytracedDecor(office); // neon and a chrome sculpture, before the nav grid reads the colliders
+const rtDecor = addRaytracedDecor(office); // neon and a chrome sculpture, before the nav grid reads the colliders
 scene.add(office.root);
 const nav = new NavGrid(office.colliders);
 prepareSeats();
@@ -100,7 +100,8 @@ player.onLockError = () => {
   // Chrome refuses a re-capture for about a second after Esc; the click-to-play overlay covers that.
 };
 
-// Hybrid real-time ray tracing (src/rt). R toggles back to the original raster look.
+// Optional hybrid real-time ray tracing (src/rt). Off unless you tick it (or press G); the
+// original look is untouched while it's off, and nothing is built for it until it's first on.
 const rt = new RayTracer({
   renderer,
   scene,
@@ -118,10 +119,32 @@ const rt = new RayTracer({
     const list = [...bloops.values(), ...leaving, player.bloop];
     return list.map((b) => ({ root: b.root, probe: (out) => b.rtProbe(out) }));
   },
+  movingChairs: () => office.chairs?.moving() ?? [],
   bakeKey: () => `${floorId}|${player.view}`,
 });
-rt.enabled = new URLSearchParams(location.search).get("rt") !== "0";
-const rtHud = new RTHud(rt, ui);
+const rtHud = new RTHud(rt, ui, (on) => setRayTracing(on));
+function setRayTracing(on: boolean, remember = true) {
+  rt.enabled = on;
+  rtDecor.setVisible(on);
+  if (remember) {
+    try {
+      localStorage.setItem("office.rt", on ? "1" : "0");
+    } catch {
+      // private mode: just don't remember
+    }
+  }
+  rtHud.draw();
+}
+{
+  const q = new URLSearchParams(location.search).get("rt");
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem("office.rt");
+  } catch {
+    // ignore
+  }
+  setRayTracing(q !== null ? q !== "0" : saved === "1", false);
+}
 (window as unknown as Record<string, unknown>).rt = rt;
 
 function resize() {
@@ -659,7 +682,7 @@ function onSnapshot(s: OfficeSnapshot) {
   renderHud();
 }
 
-// Without T3 Code the office fills with demo agents (?demo=0 turns that off).
+// ?demo=1 fills an empty office with demo agents (for trying the office or the ray tracer).
 const demo = new DemoOffice();
 let rawSnapshot: OfficeSnapshot | null = null;
 const feedSnapshot = () => {
@@ -836,10 +859,9 @@ window.addEventListener("keydown", (e) => {
     chat.focusComposer();
   } else if (e.code === "BracketLeft" || e.code === "BracketRight") {
     chat.cycle(e.code === "BracketLeft" ? -1 : 1);
-  } else if (e.code === "KeyR") {
-    rt.enabled = !rt.enabled;
-    toast(rt.enabled ? "⚡ Ray tracing on" : "Raster (original look)");
-    rtHud.draw();
+  } else if (e.code === "KeyG") {
+    setRayTracing(!rt.enabled);
+    toast(rt.enabled ? "⚡ Ray tracing on" : "Ray tracing off (original look)");
   } else if (e.code === "KeyL" && rt.enabled) {
     toast(`Lighting: ${rt.cycleMood()}`);
     rtHud.draw();

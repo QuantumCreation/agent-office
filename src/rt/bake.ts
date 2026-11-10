@@ -10,6 +10,13 @@ import { classify, textureAverage, type RTInfo } from "./materials.ts";
 
 export const LIGHT_RECT = 0;
 export const LIGHT_SPHERE = 1;
+/** Chairs that can swivel are tagged 2 + id in rtMat.w; the shader keeps a 31-bit mask of them. */
+export const MAX_CHAIR_IDS = 31;
+/**
+ * One extra chair top, in its own frame, is stashed this far below the office (tagged 2 + 31).
+ * Rays near a turned chair are moved into that frame, so turning chairs need no extra textures.
+ */
+export const CHAIR_STASH = new THREE.Vector3(0, -200, 0);
 
 export interface RTLight {
   type: number;
@@ -24,14 +31,18 @@ export interface RTLight {
   live?: { texture: THREE.Texture; strength: number };
 }
 
+export interface BakedMesh {
+  bvh: MeshBVHUniformStruct;
+  normal: FloatVertexAttributeTexture;
+  color: FloatVertexAttributeTexture;
+  mat: FloatVertexAttributeTexture;
+}
+
 export interface Bake {
   bvh: MeshBVH;
-  uniforms: {
-    bvh: MeshBVHUniformStruct;
-    normal: FloatVertexAttributeTexture;
-    color: FloatVertexAttributeTexture;
-    mat: FloatVertexAttributeTexture;
-  };
+  uniforms: BakedMesh;
+  /** Whether a swivel chair is stashed at CHAIR_STASH. */
+  hasChair: boolean;
   lights: RTLight[];
   triangles: number;
   ms: number;
@@ -141,6 +152,7 @@ export function bakeScene(root: THREE.Object3D): Promise<Bake> {
   const inst = new THREE.Matrix4();
   const world = new THREE.Matrix4();
   const tint = new THREE.Color();
+  let hasChair = false;
 
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
@@ -157,11 +169,16 @@ export function bakeScene(root: THREE.Object3D): Promise<Bake> {
     if (info.map?.image) albedo.multiply(textureAverage(info.map));
     const im = mesh as THREE.InstancedMesh;
     const count = im.isInstancedMesh ? im.count : 1;
+    // Swivel chairs are baked facing their desks and tagged with their id; the tracer turns
+    // the rays instead of the chair while one is swivelled (see MovingChair).
+    const rest = mesh.userData.rtRest as THREE.Matrix4[] | undefined;
     for (let i = 0; i < count; i++) {
       world.copy(mesh.matrixWorld);
       tint.setRGB(1, 1, 1);
+      const chairId = rest && i < MAX_CHAIR_IDS ? i : -1;
       if (im.isInstancedMesh) {
-        im.getMatrixAt(i, inst);
+        if (rest) inst.copy(rest[i]);
+        else im.getMatrixAt(i, inst);
         world.multiply(inst);
         if (im.instanceColor) im.getColorAt(i, tint);
       }
@@ -171,21 +188,10 @@ export function bakeScene(root: THREE.Object3D): Promise<Bake> {
         if (l) lights.push(l);
         continue;
       }
-      const part = g.clone();
-      part.applyMatrix4(world);
-      const n = part.attributes.position.count;
-      const col = new Float32Array(n * 4);
-      const mat = new Float32Array(n * 4);
       const vc = (material as THREE.MeshBasicMaterial).vertexColors ? g.attributes.color : undefined;
-      for (let k = 0; k < n; k++) {
-        const r = vc ? vc.getX(k) : 1, gg = vc ? vc.getY(k) : 1, b = vc ? vc.getZ(k) : 1;
-        col.set([c.r * r, c.g * gg, c.b * b, info.emissive], k * 4);
-        mat.set([info.rough, info.metal, info.group, info.light ? 1 : 0], k * 4);
-      }
-      part.deleteAttribute("color");
-      part.setAttribute("rtColor", new THREE.BufferAttribute(col, 4));
-      part.setAttribute("rtMat", new THREE.BufferAttribute(mat, 4));
-      parts.push(part);
+      parts.push(tagged(g, world, c, vc, info, info.light ? 1 : chairId >= 0 ? 2 + chairId : 0));
+      if (rest && i === 0) parts.push(tagged(g, new THREE.Matrix4().makeTranslation(CHAIR_STASH), c, vc, info, 2 + MAX_CHAIR_IDS));
+      if (rest) hasChair = true;
       if (info.light && info.emissive > 0) {
         const radiance = c.clone().multiplyScalar(info.emissive);
         const live = info.liveMap && info.map ? { texture: info.map, strength: info.emissive } : undefined;
@@ -209,33 +215,63 @@ export function bakeScene(root: THREE.Object3D): Promise<Bake> {
       bvh = new MeshBVH(merged, { strategy: SAH, maxLeafTris: 4 });
     }
     console.info(`[rt] bake: collect ${(t1 - t0).toFixed(0)} ms, merge ${(t2 - t1).toFixed(0)} ms (main thread), bvh ${(performance.now() - t2).toFixed(0)} ms (worker)`);
-    return finish(bvh, merged, lights, t0);
+    return finish(bvh, merged, lights, hasChair, t0);
   });
   queue = job.catch(() => undefined);
   return job;
 }
 
-function finish(bvh: MeshBVH, merged: THREE.BufferGeometry, lights: RTLight[], t0: number): Bake {
-  const bvhUniform = new MeshBVHUniformStruct();
-  bvhUniform.updateFrom(bvh);
-  const normal = new FloatVertexAttributeTexture();
-  normal.updateFrom(merged.attributes.normal as THREE.BufferAttribute);
-  const color = new FloatVertexAttributeTexture();
-  color.updateFrom(merged.attributes.rtColor as THREE.BufferAttribute);
-  const mat = new FloatVertexAttributeTexture();
-  mat.updateFrom(merged.attributes.rtMat as THREE.BufferAttribute);
+/** A world-space copy of `g` with the tracer's per-vertex colour and material. */
+function tagged(g: THREE.BufferGeometry, world: THREE.Matrix4, c: THREE.Color, vc: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined, info: RTInfo, flag: number) {
+  const part = g.clone();
+  part.applyMatrix4(world);
+  const n = part.attributes.position.count;
+  const col = new Float32Array(n * 4);
+  const mat = new Float32Array(n * 4);
+  for (let k = 0; k < n; k++) {
+    const r = vc ? vc.getX(k) : 1, gg = vc ? vc.getY(k) : 1, b = vc ? vc.getZ(k) : 1;
+    col.set([c.r * r, c.g * gg, c.b * b, info.emissive], k * 4);
+    mat.set([info.rough, info.metal, info.group, flag], k * 4);
+  }
+  part.deleteAttribute("color");
+  part.setAttribute("rtColor", new THREE.BufferAttribute(col, 4));
+  part.setAttribute("rtMat", new THREE.BufferAttribute(mat, 4));
+  return part;
+}
+
+function upload(bvh: MeshBVH, g: THREE.BufferGeometry): BakedMesh {
+  const out: BakedMesh = {
+    bvh: new MeshBVHUniformStruct(),
+    normal: new FloatVertexAttributeTexture(),
+    color: new FloatVertexAttributeTexture(),
+    mat: new FloatVertexAttributeTexture(),
+  };
+  out.bvh.updateFrom(bvh);
+  out.normal.updateFrom(g.attributes.normal as THREE.BufferAttribute);
+  out.color.updateFrom(g.attributes.rtColor as THREE.BufferAttribute);
+  out.mat.updateFrom(g.attributes.rtMat as THREE.BufferAttribute);
+  return out;
+}
+
+function disposeBaked(m: BakedMesh) {
+  m.bvh.dispose();
+  m.normal.dispose();
+  m.color.dispose();
+  m.mat.dispose();
+}
+
+function finish(bvh: MeshBVH, merged: THREE.BufferGeometry, lights: RTLight[], hasChair: boolean, t0: number): Bake {
+  const uniforms = upload(bvh, merged);
   const triangles = merged.index!.count / 3;
   return {
     bvh,
-    uniforms: { bvh: bvhUniform, normal, color, mat },
+    uniforms,
+    hasChair,
     lights,
     triangles,
     ms: performance.now() - t0,
     dispose() {
-      bvhUniform.dispose();
-      normal.dispose();
-      color.dispose();
-      mat.dispose();
+      disposeBaked(uniforms);
       merged.dispose();
     },
   };
