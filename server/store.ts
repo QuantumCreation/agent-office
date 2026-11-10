@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { BoardSettings, Issue } from "../shared/types.ts";
 import { normalizeBoardSettings } from "../shared/board.ts";
+import type { ClaudeData } from "./claude.ts";
 
 /** Board settings as saved. The GitLab token stays on this machine and is never sent to the page. */
 export interface StoredBoard {
@@ -18,6 +19,8 @@ export interface OfficeData {
   issues: Issue[];
   pm: Record<string, string>;
   boards: Record<string, StoredBoard>;
+  /** Claude Code floors and the office's notes on their sessions (absent until one is added). */
+  claude?: ClaudeData;
 }
 
 export class Store {

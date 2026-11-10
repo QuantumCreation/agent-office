@@ -5,6 +5,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { T3Client } from "./t3.ts";
+import { ClaudeBackend } from "./claude.ts";
 import { Store, type StoredBoard } from "./store.ts";
 import * as gitlab from "./gitlab.ts";
 import { applyBoardPatch, BoardSettingsError, defaultBoardSettings, slugify, WALL_MAX_COLUMNS } from "../shared/board.ts";
@@ -59,6 +60,31 @@ export function createBridge(options: BridgeOptions) {
   let rawThreads = new Map<string, Json>();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let polling = false;
+
+  // Each backend keeps its last good state, so one failing doesn't empty the other's floors.
+  let t3State = { ok: false, error: null as string | null, projects: [] as ProjectInfo[], agents: [] as AgentInfo[] };
+  let claudeState = { ok: true, error: null as string | null, projects: [] as ProjectInfo[], agents: [] as AgentInfo[] };
+  let claudeRefresh: ReturnType<typeof setTimeout> | null = null;
+  // Claude Code sessions run inside this process and report every step; refresh just their part.
+  const claude = new ClaudeBackend(store, () => {
+    if (claudeRefresh) return;
+    claudeRefresh = setTimeout(async () => {
+      claudeRefresh = null;
+      await pollClaude();
+      compose();
+    }, 150);
+  });
+  const isClaudeProject = (projectId: string) => claude.ownsProject(projectId);
+  const isClaudeThread = (threadId: string) => claude.owns(threadId);
+
+  function sendTo(threadId: string, text: string) {
+    return isClaudeThread(threadId) ? claude.send(threadId, text) : t3.sendMessage(threadId, text);
+  }
+
+  function startThread(opts: { projectId: string; message: string; title?: string; model?: string; provider?: string; pm?: boolean }) {
+    if (isClaudeProject(opts.projectId)) return claude.start(opts).then((threadId) => ({ threadId }));
+    return t3.startThread({ projectId: opts.projectId, message: opts.message, title: opts.title, model: opts.model, provider: opts.provider });
+  }
 
   // ---------------------------------------------------------------- polling
 
@@ -144,9 +170,7 @@ export function createBridge(options: BridgeOptions) {
     for (const a of agents) prevActivity.set(a.id, a.activity);
   }
 
-  async function poll() {
-    if (polling) return;
-    polling = true;
+  async function pollT3() {
     try {
       const shell = await t3.shell();
       const projects: ProjectInfo[] = (shell.projects ?? [])
@@ -182,29 +206,69 @@ export function createBridge(options: BridgeOptions) {
       }
       // Forget PMs whose threads are gone.
       for (const [pid, tid] of Object.entries(store.data.pm)) {
+        if (isClaudeProject(pid)) continue;
         if (!rawThreads.has(tid)) {
           delete store.data.pm[pid];
           store.save();
         }
       }
-      assignDesks(agents);
-      updateIssuesFromActivity(agents);
-      snapshot = {
-        connected: true,
-        error: null,
-        projects,
-        agents,
-        issues: store.data.issues,
-        pm: store.data.pm,
-        boards: snapshot.boards,
-        bridgeUrl: options.publicUrl(),
-      };
+      t3State = { ok: true, error: null, projects, agents };
     } catch (error) {
-      snapshot = { ...snapshot, connected: false, error: error instanceof Error ? error.message : String(error) };
+      t3State = { ...t3State, ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async function pollClaude() {
+    try {
+      const pmIds = new Set(Object.values(store.data.pm));
+      const agents = await claude.agents(pmIds);
+      const ids = new Set(agents.map((a) => a.id));
+      for (const [pid, tid] of Object.entries(store.data.pm)) {
+        if (isClaudeProject(pid) && !ids.has(tid)) {
+          delete store.data.pm[pid];
+          store.save();
+        }
+      }
+      claudeState = { ok: true, error: null, projects: claude.projects(), agents };
+    } catch (error) {
+      claudeState = { ...claudeState, ok: false, error: error instanceof Error ? error.message : String(error), projects: claude.projects() };
+    }
+  }
+
+  /** Merges both backends into the snapshot the office sees. */
+  function compose() {
+    const agents = [...t3State.agents, ...claudeState.agents];
+    for (const a of agents) a.desk = null;
+    assignDesks(agents);
+    updateIssuesFromActivity(agents);
+    const claudeFloors = claudeState.projects.length;
+    snapshot = {
+      // With no Claude Code floors this is exactly T3 Code's connection state, as before.
+      connected: t3State.ok || claudeFloors > 0,
+      error: t3State.ok ? null : t3State.error,
+      projects: [...t3State.projects, ...claudeState.projects],
+      agents,
+      issues: store.data.issues,
+      pm: store.data.pm,
+      boards: snapshot.boards,
+      bridgeUrl: options.publicUrl(),
+      backends: {
+        t3: { ok: t3State.ok, error: t3State.error },
+        claude: { ok: claudeState.ok && claude.status.ok, error: claudeState.error ?? claude.status.error, floors: claudeFloors },
+      },
+    };
+    broadcast();
+  }
+
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    try {
+      await Promise.all([pollT3(), pollClaude()]);
     } finally {
       polling = false;
     }
-    broadcast();
+    compose();
   }
 
   function schedule() {
@@ -278,6 +342,7 @@ export function createBridge(options: BridgeOptions) {
   }
 
   async function getDetail(threadId: string): Promise<ThreadDetail> {
+    if (isClaudeThread(threadId)) return claude.detail(threadId);
     const raw = rawThreads.get(threadId);
     const key = raw ? `${raw.updatedAt}|${raw.itemCount}|${raw.pendingRuntimeRequest?.id ?? ""}` : "";
     const cached = detailCache.get(threadId);
@@ -690,7 +755,8 @@ Current columns: ${cols}. Wall shows: ${s.wall.columns.join(", ")}. Board view s
 
   function pmBrief(project: ProjectInfo) {
     const base = options.publicUrl();
-    return `You are the Issue Board Manager for the "${project.title}" floor of Agent Office, a 3D office where coding agents (T3 Code threads) work at desks. Project folder: ${project.workspaceRoot}. Project id: ${project.id}.
+    const agentsAre = project.backend === "claude" ? "Claude Code sessions" : "T3 Code threads";
+    return `You are the Issue Board Manager for the "${project.title}" floor of Agent Office, a 3D office where coding agents (${agentsAre}) work at desks. Project folder: ${project.workspaceRoot}. Project id: ${project.id}.
 
 Your job is to run the floor's issue board: turn the boss's requests into clear tickets, keep the board tidy, and get tickets done by assigning them to agents. Don't write the project code yourself. Delegate it. You also own the board's settings: its columns, which columns and tags the wall board and the board view show, and its link to a GitLab issue board. Change them when the boss asks.
 
@@ -707,7 +773,7 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
       deskReservations.set(projectId, [...(deskReservations.get(projectId) ?? []), desk]);
     }
     try {
-      const { threadId } = await t3.startThread({
+      const { threadId } = await startThread({
         projectId,
         message: opts.message,
         title: opts.title,
@@ -752,6 +818,33 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
       return { threadId };
     }
 
+    if (method === "POST" && a === "threads" && b && isClaudeThread(b)) {
+      switch (c) {
+        case "send":
+          if (!body.text?.trim()) throw httpError(400, "text is required");
+          await claude.send(b, body.text);
+          break;
+        case "archive":
+          await claude.archive(b);
+          break;
+        case "stop":
+          await claude.stop(b);
+          break;
+        case "settle":
+        case "visit":
+          claude.visit(b);
+          break;
+        case "respond":
+          if (!body.requestId) throw httpError(400, "requestId is required");
+          claude.respond(b, body.requestId, body);
+          break;
+        default:
+          throw httpError(404, "Unknown thread action");
+      }
+      void poll();
+      return { ok: true };
+    }
+
     if (method === "POST" && a === "threads" && b) {
       switch (c) {
         case "send":
@@ -790,13 +883,23 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
         .map((x) => `"${x!.title}"`)
         .join(", ");
       const message = `[Office meeting. Attendees: you and ${ids.length - 1} other agent(s): ${roster}. The boss says:]\n\n${body.text}\n\n(Reply briefly and directly, as in a meeting.)`;
-      const results = await Promise.allSettled(ids.map((id) => t3.sendMessage(id, message)));
+      const results = await Promise.allSettled(ids.map((id) => sendTo(id, message)));
       void poll();
       return { sent: results.filter((r) => r.status === "fulfilled").length };
     }
 
     if (method === "POST" && a === "projects") {
       if (!body.path) throw httpError(400, "path is required");
+      if (body.backend === "claude") {
+        let project: ProjectInfo;
+        try {
+          project = await claude.addProject(String(body.path));
+        } catch (error) {
+          throw httpError(400, (error as Error).message);
+        }
+        void poll();
+        return { ok: true, project };
+      }
       await t3.addProject(body.path);
       void poll();
       return { ok: true };
@@ -807,11 +910,12 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
       const project = snapshot.projects.find((p) => p.id === projectId);
       if (!project) throw httpError(404, "Unknown project");
       const existing = store.data.pm[projectId];
-      if (existing && rawThreads.has(existing)) return { threadId: existing };
-      const { threadId } = await t3.startThread({
+      if (existing && (rawThreads.has(existing) || isClaudeThread(existing))) return { threadId: existing };
+      const { threadId } = await startThread({
         projectId,
         message: pmBrief(project),
         title: `Issue Board PM · ${project.title}`,
+        pm: true,
       });
       store.data.pm[projectId] = threadId;
       store.save();
@@ -869,7 +973,7 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
         }
         if (method === "POST" && c === "assign") {
           if (!body.threadId) throw httpError(400, "threadId is required");
-          await t3.sendMessage(body.threadId, ticketMessage(issue));
+          await sendTo(body.threadId, ticketMessage(issue));
           const { issue: updated, warning } = await startWork(issue, body.threadId);
           return warning ? { ...updated, warning } : updated;
         }
@@ -938,7 +1042,9 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
     middleware,
     close() {
       if (pollTimer) clearTimeout(pollTimer);
+      if (claudeRefresh) clearTimeout(claudeRefresh);
       clearInterval(gitlabTimer);
+      claude.close();
       for (const res of clients) res.end();
     },
   };

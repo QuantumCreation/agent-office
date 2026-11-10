@@ -1,12 +1,13 @@
 # Agent Office 🫧
 
-A cozy 3D office where your [T3 Code](https://t3.codes) threads are little round workers ("Bloops").
+A cozy 3D office where your [T3 Code](https://t3.codes) threads and [Claude Code](https://claude.com/claude-code)
+sessions are little round workers ("Bloops").
 Walk around in first person, peek at their screens, chat with them, hold meetings, hire and lay off agents,
-and run an issue board, all backed by your live T3 Code threads.
+and run an issue board, all backed by your live T3 Code threads and Claude Code sessions.
 
 ## Run it
 
-Make sure the T3 Code app is open, then:
+Make sure the T3 Code app is open (or use Claude Code floors, below), then:
 
 ```sh
 npm install
@@ -30,6 +31,30 @@ npm run dev        # http://127.0.0.1:5199
 | Meeting room | Your message goes to every attendee; their replies show up in the meeting log |
 | Issue board + PM | Tickets stored in `data/office.json`, or mirrored from a linked GitLab issue board. The PM is a thread that manages the board, and its settings, through the office's HTTP API |
 
+## Claude Code floors
+
+A floor can also be a folder whose agents are [Claude Code](https://claude.com/claude-code) sessions. In the
+elevator (**F**), type the folder's path, pick **Claude Code**, and **Build floor**. T3 Code floors are unchanged,
+and both kinds can sit in the same building.
+
+| In the office | In Claude Code |
+|---|---|
+| A floor | A folder on this machine |
+| A Bloop at a desk | A session in that folder: the ones hired in the office, plus sessions from the last 24 hours that you ran elsewhere (the CLI, the desktop app, an IDE) |
+| Hiring at an empty desk | Starting a session with your task, run here by the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview) with your own Claude Code settings, `CLAUDE.md` and permission rules. Pick Opus, Sonnet or Haiku, or the default |
+| Approvals and questions | Tool permission prompts and `AskUserQuestion` show up as "needs input" with Allow / Allow for this session / Deny, or the question's options |
+| Talking to them | Sending a message to the session (it resumes it if it was idle). Sessions still running in another window are read-only until they finish |
+| Their monitor | The session's transcript (`~/.claude/projects`): commands, edits, searches, todos, messages |
+| Laying off | Stopping the session and hiding it from the office; its transcript stays in Claude Code |
+
+The SDK is an optional dependency that only loads once a Claude Code floor exists, and it uses your Claude Code
+login. Settings, all optional:
+
+- `AGENT_OFFICE_CLAUDE_PERMISSION_MODE`: the sessions' permission mode (`default`, `acceptEdits`, `plan`, ...). Default `default`, so tools ask first.
+- `AGENT_OFFICE_CLAUDE_RECENT_HOURS`: how far back to pick up sessions run outside the office. Default 24.
+- `CLAUDE_CODE_PATH`: a Claude Code executable to run instead of the one bundled with the SDK.
+- `CLAUDE_CONFIG_DIR`: where Claude Code keeps its data, if not `~/.claude`.
+
 ## Controls
 
 - Click the view to grab the mouse, then **WASD** to walk (**Shift** runs). **Esc** lets go of the mouse.
@@ -45,6 +70,9 @@ npm run dev        # http://127.0.0.1:5199
 - `server/t3.ts` talks to the local T3 Code server. It reads the orchestration shell and thread snapshots
   over HTTP with a scoped token minted by `t3 auth session issue`. It sends archive, stop, settle and
   answer commands over T3's WebSocket RPC, and starts and messages threads with the `t3` CLI.
+- `server/claude.ts` runs Claude Code floors: sessions hired in the office run in-process through the Claude
+  Agent SDK (approvals and questions come back through `canUseTool`), and the rest are read from their
+  transcripts with the SDK's `listSessions`.
 - `server/bridge.ts` is the office API (`/api/*`) plus a server-sent-events stream. It runs inside Vite in
   dev (`vite.config.ts`) or `server/main.ts` in production. It only accepts requests from this machine.
 - `src/world/*` holds the Three.js scene: floor plan (`layout.ts`), office props (`office.ts`), Bloops (`bloop.ts`),

@@ -6,10 +6,14 @@ export const PM_DESK = -1;
 
 export type Activity = "working" | "needs-input" | "done" | "error" | "idle";
 
+/** Where a floor's agents run. Missing means T3 Code. */
+export type Backend = "t3" | "claude";
+
 export interface ProjectInfo {
   id: string;
   title: string;
   workspaceRoot: string;
+  backend?: Backend;
 }
 
 export interface AgentInfo {
@@ -30,6 +34,7 @@ export interface AgentInfo {
   /** Desk index on its project's floor, PM_DESK for the board manager, null if no seat. */
   desk: number | null;
   isPm: boolean;
+  backend?: Backend;
 }
 
 /** A ticket's column id (see BoardSettings.columns). "" means it fits no column. */
@@ -108,6 +113,11 @@ export interface OfficeSnapshot {
   /** Board settings per project id. */
   boards: Record<string, BoardState>;
   bridgeUrl: string;
+  /** Health of each agent backend (absent from older bridges). */
+  backends?: {
+    t3: { ok: boolean; error: string | null };
+    claude: { ok: boolean; error: string | null; floors: number };
+  };
 }
 
 export interface ActivityItem {

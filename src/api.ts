@@ -40,7 +40,7 @@ export const api = {
   hire: (body: { projectId: string; message: string; title?: string; desk?: number; model?: string; provider?: string }) =>
     call<{ threadId: string }>("POST", "/api/hire", body),
   meeting: (threadIds: string[], text: string) => call<{ sent: number }>("POST", "/api/meeting", { threadIds, text }),
-  addProject: (path: string) => call("POST", "/api/projects", { path }),
+  addProject: (path: string, backend?: "t3" | "claude") => call("POST", "/api/projects", backend ? { path, backend } : { path }),
   ensurePm: (projectId: string) => call<{ threadId: string }>("POST", "/api/pm", { projectId }),
   createIssue: (body: { projectId: string; title: string; body?: string; labels?: string[]; status?: string }) =>
     call<Issue>("POST", "/api/issues", { ...body, createdBy: "boss" }),
