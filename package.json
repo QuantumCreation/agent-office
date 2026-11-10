@@ -15,7 +15,8 @@
     "app:icon": "node scripts/render-icon.ts"
   },
   "dependencies": {
-    "three": "^0.170.0"
+    "three": "^0.170.0",
+    "three-mesh-bvh": "^0.9.1"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",

@@ -20,6 +20,10 @@ import { StaffModal } from "./ui/staff.ts";
 import { defaultBoardSettings } from "../shared/board.ts";
 import { OfficeChat } from "./ui/chat.ts";
 import { InternFollower } from "./world/intern.ts";
+import { RayTracer } from "./rt/renderer.ts";
+import { RTHud } from "./rt/hud.ts";
+import { addRaytracedDecor } from "./rt/decor.ts";
+import { DemoOffice } from "./rt/demo.ts";
 
 // ------------------------------------------------------------------ setup
 
@@ -80,6 +84,7 @@ const dayNight = new DayNight(city, { hemi, ambient, key: sun });
 const assetLib = new AssetLibrary(accentMaterial);
 await assetLib.preload(OFFICE_ASSETS);
 const office: Office = buildOffice(assetLib);
+addRaytracedDecor(office); // neon and a chrome sculpture, before the nav grid reads the colliders
 scene.add(office.root);
 const nav = new NavGrid(office.colliders);
 prepareSeats();
@@ -94,6 +99,30 @@ let internRecruiting = 0;
 player.onLockError = () => {
   // Chrome refuses a re-capture for about a second after Esc; the click-to-play overlay covers that.
 };
+
+// Hybrid real-time ray tracing (src/rt). R toggles back to the original raster look.
+const rt = new RayTracer({
+  renderer,
+  scene,
+  camera,
+  cityGroup: city.group,
+  officeRoot: office.root,
+  sky: () => ({
+    sunDir: dayNight.env.sunDir,
+    sunElevation: dayNight.sunElevation,
+    moonDir: dayNight.env.moonDir,
+    moon: dayNight.env.moon,
+    night: dayNight.env.night,
+  }),
+  bloops: () => {
+    const list = [...bloops.values(), ...leaving, player.bloop];
+    return list.map((b) => ({ root: b.root, probe: (out) => b.rtProbe(out) }));
+  },
+  bakeKey: () => `${floorId}|${player.view}`,
+});
+rt.enabled = new URLSearchParams(location.search).get("rt") !== "0";
+const rtHud = new RTHud(rt, ui);
+(window as unknown as Record<string, unknown>).rt = rt;
 
 function resize() {
   const w = window.innerWidth;
@@ -630,7 +659,19 @@ function onSnapshot(s: OfficeSnapshot) {
   renderHud();
 }
 
-api.subscribe(onSnapshot, (ok) => connEl.classList.toggle("ok", ok));
+// Without T3 Code the office fills with demo agents (?demo=0 turns that off).
+const demo = new DemoOffice();
+let rawSnapshot: OfficeSnapshot | null = null;
+const feedSnapshot = () => {
+  if (rawSnapshot) onSnapshot(demo.wrap(rawSnapshot, feedSnapshot));
+};
+api.subscribe(
+  (s) => {
+    rawSnapshot = s;
+    feedSnapshot();
+  },
+  (ok) => connEl.classList.toggle("ok", ok),
+);
 
 // ------------------------------------------------------------------ HUD
 
@@ -795,6 +836,19 @@ window.addEventListener("keydown", (e) => {
     chat.focusComposer();
   } else if (e.code === "BracketLeft" || e.code === "BracketRight") {
     chat.cycle(e.code === "BracketLeft" ? -1 : 1);
+  } else if (e.code === "KeyR") {
+    rt.enabled = !rt.enabled;
+    toast(rt.enabled ? "⚡ Ray tracing on" : "Raster (original look)");
+    rtHud.draw();
+  } else if (e.code === "KeyL" && rt.enabled) {
+    toast(`Lighting: ${rt.cycleMood()}`);
+    rtHud.draw();
+  } else if (e.code === "KeyX" && rt.enabled) {
+    rt.view = (rt.view + 1) % 5;
+    rtHud.draw();
+  } else if (e.code === "KeyN" && rt.enabled) {
+    rt.denoise = !rt.denoise;
+    rtHud.draw();
   }
 });
 
@@ -1344,7 +1398,9 @@ function frame() {
       renderInternButton();
     }
   }
-  renderer.render(scene, camera);
+  rtHud.update(dt);
+  if (rt.enabled) rt.render();
+  else renderer.render(scene, camera);
 }
 frame();
 

@@ -39,6 +39,33 @@ managers still hear when their agents finish. Click the Dock icon to bring the w
 Desks, the issue board, managers and settings live in `~/Library/Application Support/Agent Office/office.json`,
 shared by the app, `npm run dev` and `npm start`. Set `AGENT_OFFICE_DATA` to use another file.
 
+## Real-time ray tracing ⚡
+
+This fork renders the office with a hybrid real-time ray tracer (`src/rt/`). The office and the Bloops are
+rasterized into a G-buffer, then every pixel traces rays against a BVH of the whole office
+([three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh), built in a worker) plus analytic spheres for every Bloop:
+
+- **Reflections**: polished marble, tile, wood and resin floors, mirror-steel lift doors, a chrome sculpture in the lobby,
+  glossy Bloops, and glass that traces its own mirror reflection. Rays that hit something on screen reuse last frame's
+  finished pixel, so reflections have textures, faces and reflections of their own.
+- **Ray-traced soft shadows** from every light: ceiling panels, monitors (coloured by what's on screen), lamps, neon,
+  the sun and moon through the curtain wall, and each Bloop's status bulb.
+- **Status colours are real lights**: blue working, yellow needs input, green done, red error. Their glow spills
+  onto desks and neighbours, so you can see who needs you across a dark floor.
+- **One bounce of global illumination**, temporal accumulation (with mirror reflections reprojected through their
+  virtual image) and an edge-aware à-trous denoiser.
+- Synthwave set dressing: a cyan ceiling cove along the glazing and pink underglow beneath the desk benches.
+
+| Key | |
+|---|---|
+| **R** | Ray tracing on/off (compare with the original toon look) |
+| **L** | Lighting mood: *Live* (follows the real time of day), *Neon noir*, *Lights out* |
+| **X** | Debug views: final, diffuse light, reflections, normals, roughness/metal |
+| **N** | Denoiser on/off (see the raw 1-sample rays) |
+
+`?rt=0` starts in raster mode. Without T3 Code the office fills with demo agents whose status changes every few
+seconds (`?demo=0` turns that off). Runs at ~230 fps at 1280×720 and ~115 fps at 2560×1440 on an RTX 5090.
+
 ## How it maps to T3 Code
 
 | In the office | In T3 Code |
