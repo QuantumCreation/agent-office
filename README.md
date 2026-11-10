@@ -61,8 +61,10 @@ The office and the Bloops are rasterized into a G-buffer, then every pixel trace
 - Swivel chairs are baked facing their desks; while one turns, rays near it are moved into the frame of a spare chair
   stashed in the BVH, so turned chairs keep exact shadows and reflections without rebuilding anything.
 
+![The original look and ray tracing, split through the lobby's chrome sculpture](docs/rt/before-after.jpg)
+![Neon noir: a working Bloop lit by its own status bulb](docs/rt/neon-noir.jpg)
 ![Chrome sculpture in the lobby](docs/rt/lobby-chrome.jpg)
-![Neon noir mood](docs/rt/neon-noir.jpg)
+![Lights out: a Bloop that needs you, lit only by its yellow bulb](docs/rt/lights-out.jpg)
 ![Afternoon sun through the curtain wall](docs/rt/afternoon-sun.jpg)
 
 | Key | |
