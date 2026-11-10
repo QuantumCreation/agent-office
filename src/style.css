@@ -1697,3 +1697,156 @@ pre.approval {
 .chat-send:hover {
   background: #3d447d;
 }
+
+/* Intern button (top-left HUD): a status dot appears once you have one. */
+.intern-btn {
+  position: relative;
+}
+.intern-btn.has-intern::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dot);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+/* ---------------------------------------------------------------- staff roster (manager's office) */
+
+.staff {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.manager-bar {
+  background: #f8f0e2;
+  border-color: #e6d2ad;
+}
+.manager-bar.column {
+  flex-direction: column;
+  align-items: stretch;
+}
+.manager-bar .row.spread {
+  justify-content: space-between;
+  align-items: center;
+}
+.manager-bar .dot {
+  margin-right: 6px;
+}
+.manager-bar .pill {
+  margin-left: 4px;
+}
+.manager-bar textarea {
+  flex: 1;
+  resize: vertical;
+}
+.staff-list {
+  display: flex;
+  flex-direction: column;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.staff-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 92px 112px 72px auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--card);
+}
+.staff-row + .staff-row {
+  border-top: 1px solid var(--line);
+}
+.staff-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 800;
+}
+.staff-who .tag {
+  margin-left: 6px;
+}
+.staff-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.staff-row .pill {
+  justify-self: start;
+}
+.staff-desk,
+.staff-when {
+  font-size: 12px;
+}
+.staff-actions {
+  display: flex;
+  gap: 6px;
+}
+.staff-log h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.staff-log-line {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 10px;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.staff-log-line.fire strong {
+  color: #8a4b2e;
+}
+@media (max-width: 720px) {
+  .staff-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+  }
+  .staff-desk,
+  .staff-when {
+    display: none;
+  }
+  .staff-actions {
+    grid-column: 2 / -1;
+  }
+}
+
+/* ---------------------------------------------------------------- Mac app
+   electron/preload.ts adds .app-shell to <html> inside Agent Office.app. The window has no
+   title bar: the view runs up under the window buttons, and a strip along the top drags it. */
+
+#drag-strip {
+  display: none;
+}
+html.app-shell #drag-strip {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  -webkit-app-region: drag;
+}
+/* Anything you click keeps its clicks (drag regions otherwise win, whatever is on top). */
+html.app-shell :is(button, input, textarea, select, a, label, [contenteditable], #attention, .panel, .modal, .chat) {
+  -webkit-app-region: no-drag;
+}
+html.app-shell #hud-tl {
+  left: 86px; /* clear of the window buttons */
+}
+/* Like a native app: clicking around doesn't select text, but messages and text boxes still do. */
+html.app-shell body {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+html.app-shell :is(input, textarea, [contenteditable], .msg .bubble, pre, code) {
+  -webkit-user-select: text;
+  user-select: text;
+}

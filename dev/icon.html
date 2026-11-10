@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Icon</title>
+    <style>
+      html, body { margin: 0; width: 1024px; height: 1024px; background: transparent; overflow: hidden; }
+      /* macOS icon grid: an 824px tile centered on a 1024px canvas, with a soft drop shadow. */
+      .tile {
+        position: absolute; left: 100px; top: 100px; width: 824px; height: 824px; border-radius: 186px; overflow: hidden;
+        background: linear-gradient(180deg, #a9d2fb 0%, #cfe3f7 58%, #f6efe2 58.2%, #efe4d0 100%);
+        box-shadow: 0 10px 22px rgba(30, 40, 70, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+      }
+      .floor-shadow {
+        position: absolute; left: 50%; top: 79%; width: 46%; height: 9%; transform: translate(-50%, -50%);
+        border-radius: 50%; background: radial-gradient(closest-side, rgba(60, 50, 40, 0.28), transparent);
+      }
+      canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="tile"><div class="floor-shadow"></div><canvas id="c"></canvas></div>
+    <script type="module" src="./icon.ts"></script>
+  </body>
+</html>

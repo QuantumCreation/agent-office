@@ -18,11 +18,14 @@ import {
   HANGOUTS,
   INTERIOR_WALL,
   ISSUE_BOARD,
+  MANAGER_DESK,
   MEETING_SEATS,
   PLATE,
   PM_DESK,
   ROOMS,
   SPAWN,
+  STAFF_BOARD,
+  STAFF_BOARD_FRONT,
   WALLS,
   deskChairs,
   type Finish,
@@ -49,6 +52,7 @@ const FILL: Record<Finish, string> = {
 };
 
 const out: string[] = [];
+const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const push = (s: string) => out.push(s);
 
 push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Helvetica, Arial, sans-serif">`);
@@ -144,7 +148,7 @@ function furniture(f: Furniture) {
 for (const f of FURNITURE) push(furniture(f));
 for (const f of deskChairs()) push(furniture(f));
 // Desks with monitors
-for (const d of [...DESKS, PM_DESK]) {
+for (const d of [...DESKS, PM_DESK, MANAGER_DESK]) {
   const along = d.facing[0] !== 0; // desks whose agents face east/west are long in z
   const w = along ? DESK_D : DESK_W;
   const h = along ? DESK_W : DESK_D;
@@ -159,6 +163,11 @@ for (const d of [...DESKS, PM_DESK]) {
 {
   const b = ISSUE_BOARD;
   push(`<rect x="${X(b.x - b.width / 2)}" y="${Z(b.z) - 3}" width="${L(b.width)}" height="5" fill="#f2b632"/>`);
+}
+// Staff board (manager's office, on a north-south wall)
+{
+  const b = STAFF_BOARD;
+  push(`<rect x="${X(b.x) - 2}" y="${Z(b.z - b.width / 2)}" width="5" height="${L(b.width)}" fill="#8a6440"/>`);
 }
 
 // Walls
@@ -252,7 +261,7 @@ for (const r of ROOMS) {
   if (r.id === "workspace") cz = -6.85;
   if (r.id === "lounge") cz = 8.45;
   if (r.id === "kitchen") cz = 7.0;
-  if (r.id === "collab") cz = 5.2;
+  if (r.id === "manager") cz = 8.75;
   if (r.id === "hub") cz = -7.3;
   if (r.id === "boardroom") cz = -12.3;
   if (r.id === "meeting-b") cz = -6.0;
@@ -266,7 +275,7 @@ for (const r of ROOMS) {
   const small = (x1 - x0) < 3.6 || (z1 - z0) < 2.4;
   const vertical = r.id === "aisle-w" || r.id === "aisle-e";
   const rot = vertical ? ` transform="rotate(-90 ${X(cx)} ${Z(cz)})"` : "";
-  push(`<text x="${X(cx)}" y="${Z(cz)}" font-size="${small ? 9.5 : 12}" font-weight="bold" text-anchor="middle" fill="#333"${rot}>${r.name}</text>`);
+  push(`<text x="${X(cx)}" y="${Z(cz)}" font-size="${small ? 9.5 : 12}" font-weight="bold" text-anchor="middle" fill="#333"${rot}>${esc(r.name)}</text>`);
   if (!vertical && !r.id.startsWith("aisle")) {
     push(`<text x="${X(cx)}" y="${Z(cz) + (small ? 11 : 14)}" font-size="${small ? 8.5 : 10}" text-anchor="middle" fill="#777">${area.toFixed(area < 10 ? 1 : 0)} m²</text>`);
   }
@@ -275,9 +284,10 @@ for (const r of ROOMS) {
 // Game markers (agent seats, spawn, board front)
 for (const s of MEETING_SEATS) push(`<circle cx="${X(s.pos[0])}" cy="${Z(s.pos[1])}" r="3" fill="#ff8a5c"/>`);
 for (const s of HANGOUTS) push(`<circle cx="${X(s.pos[0])}" cy="${Z(s.pos[1])}" r="3" fill="#43b37a"/>`);
-for (const d of [...DESKS, PM_DESK]) push(`<text x="${X(d.desk[0])}" y="${Z(d.desk[1]) + 3}" font-size="8" text-anchor="middle" fill="#8a7a5a">${d.index < 0 ? "PM" : d.index + 1}</text>`);
+for (const d of [...DESKS, PM_DESK, MANAGER_DESK]) push(`<text x="${X(d.desk[0])}" y="${Z(d.desk[1]) + 3}" font-size="8" text-anchor="middle" fill="#8a7a5a">${d.index === -1 ? "PM" : d.index === -2 ? "MGR" : d.index + 1}</text>`);
 push(`<circle cx="${X(SPAWN[0])}" cy="${Z(SPAWN[1])}" r="4" fill="none" stroke="#c03" stroke-width="1.5"/>`);
 push(`<circle cx="${X(BOARD_FRONT[0])}" cy="${Z(BOARD_FRONT[1])}" r="4" fill="none" stroke="#f2b632" stroke-width="1.5"/>`);
+push(`<circle cx="${X(STAFF_BOARD_FRONT[0])}" cy="${Z(STAFF_BOARD_FRONT[1])}" r="4" fill="none" stroke="#8a6440" stroke-width="1.5"/>`);
 void ELEVATOR_DOORS;
 
 // Dimensions
@@ -302,7 +312,7 @@ dim(PLATE.maxX, 4.25, PLATE.maxX, PLATE.maxZ, "8.75 m", 26);
 // Title block, scale bar, north arrow, legend
 const ty = Z(PLATE.maxZ) + 62;
 push(`<text x="${M}" y="${ty}" font-size="18" font-weight="bold" fill="#222">Agent Office · Typical floor plan</text>`);
-push(`<text x="${M}" y="${ty + 20}" font-size="11" fill="#555">Gross 936 m² · 36 × 26 m plate, central core · ceiling ${CEILING_HEIGHT.toFixed(1)} m · 24 workstations + 1 PM desk · scale 1:${Math.round(1000 / S * 3.78)} approx.</text>`);
+push(`<text x="${M}" y="${ty + 20}" font-size="11" fill="#555">Gross 936 m² · 36 × 26 m plate, central core · ceiling ${CEILING_HEIGHT.toFixed(1)} m · 24 workstations + PM desk + manager's corner office · scale 1:${Math.round(1000 / S * 3.78)} approx.</text>`);
 const sx = M + 520;
 for (let i = 0; i < 5; i++) push(`<rect x="${sx + i * S}" y="${ty - 8}" width="${S}" height="6" fill="${i % 2 ? "#fff" : "#333"}" stroke="#333" stroke-width="0.8"/>`);
 push(`<text x="${sx}" y="${ty + 10}" font-size="10" fill="#333">0</text><text x="${sx + 5 * S}" y="${ty + 10}" font-size="10" text-anchor="middle" fill="#333">5 m</text>`);

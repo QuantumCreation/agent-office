@@ -7,13 +7,22 @@
 // Revision 2: incorporates the design review in docs/floorplan.md (stairs and exits,
 // core zoning with restrooms off the lobby, reception, door swings, meeting room
 // orientation, acoustic zoning, furniture clearances, and the south "focus bar").
+// Revision 3: the southeast corner becomes the floor manager's office, with a private 1:1 room
+// (the old wellness room). Wellness takes the second phone room; the collaboration area's
+// high table and whiteboard move to the east end of the window bar.
 
 export type XZ = [number, number];
 export type Rect = [x0: number, z0: number, x1: number, z1: number];
 
 export const PLATE = { minX: -18, maxX: 18, minZ: -13, maxZ: 13 };
-export const CEILING_HEIGHT = 2.9;
+/** Open, loft-style ceiling. The 4 m storey leaves a shallow plenum for services above it. */
+export const CEILING_HEIGHT = 3.6;
 export const FLOOR_TO_FLOOR = 4.0;
+/** Curtain-wall glass runs from a low sill to just under the ceiling. */
+export const WINDOW_SILL = 0.3;
+export const WINDOW_HEAD = CEILING_HEIGHT - 0.3;
+/** Door height (tall doors, in proportion with the ceiling). */
+export const DOOR_HEIGHT = 2.4;
 export const EXTERIOR_WALL = 0.3;
 export const INTERIOR_WALL = 0.12;
 export const CORE_WALL = 0.2;
@@ -131,18 +140,19 @@ export const ROOMS: Room[] = [
   { id: "huddle", name: "Huddle room", rect: [-18, -2.5, -11, 1.5], finish: "carpet-accent", enclosed: true },
   { id: "aisle-w", name: "West corridor", rect: [-11, -6.5, -9, 1.5], finish: "vinyl", enclosed: false },
 
-  // East band
+  // East band. The 1:1 room is the manager's: it opens only into their office.
   { id: "meeting-b", name: "Meeting room", rect: [11, -6.5, 18, -1.5], finish: "carpet-accent", enclosed: true },
   { id: "phone-1", name: "Phone room", rect: [11, -1.5, 14.5, 1], finish: "carpet-accent", enclosed: true },
-  { id: "phone-2", name: "Phone room", rect: [11, 1, 14.5, 3.5], finish: "carpet-accent", enclosed: true },
-  { id: "wellness", name: "Wellness room", rect: [14.5, -1.5, 18, 3.5], finish: "carpet-accent", enclosed: true },
+  { id: "wellness", name: "Wellness room", rect: [11, 1, 14.5, 3.5], finish: "carpet-accent", enclosed: true },
+  { id: "one-on-one", name: "1:1 room", rect: [14.5, -1.5, 18, 3.5], finish: "carpet-accent", enclosed: true },
   { id: "aisle-e", name: "East corridor", rect: [9, -6.5, 11, 4.25], finish: "vinyl", enclosed: false },
 
   // South
   { id: "kitchen", name: "Kitchen & café", rect: [-18, 1.5, -9, 13], finish: "tile", enclosed: false },
   { id: "lounge", name: "Lounge", rect: [-9, 8, 1, 13], finish: "wood", enclosed: false },
   { id: "lobby", name: "Elevator lobby & reception", rect: [-9, 4.25, 11, 8], finish: "stone", enclosed: false },
-  { id: "collab", name: "Collaboration area", rect: [11, 3.5, 18, 13], finish: "carpet", enclosed: false },
+  // Southeast corner office: glass on two sides, glass front onto the lobby.
+  { id: "manager", name: "Manager's office", rect: [11, 3.5, 18, 13], finish: "wood", enclosed: true },
   { id: "focus-bar", name: "Window bar", rect: [1, 8, 11, 13], finish: "carpet-accent", enclosed: false },
 
   // Core: back-of-house faces the desks' side only through closed service doors;
@@ -236,7 +246,12 @@ export const WALLS: Wall[] = [
   { a: [11, -1.5], b: [11, 3.5], kind: "partition", openings: [{ at: 1.25, width: 0.9, kind: "door", swing: 1 }, { at: 3.75, width: 0.9, kind: "door", swing: 1 }] },
   { a: [11, 1], b: [14.5, 1], kind: "partition" },
   { a: [14.5, -1.5], b: [14.5, 3.5], kind: "partition" },
+  // Manager's office: its north wall has the private door into the 1:1 room (swings into the 1:1).
   { a: [11, 3.5], b: [18, 3.5], kind: "partition", openings: [{ at: 5.25, width: 0.9, kind: "door", swing: 1 }] },
+  // Glass front onto the lobby with a glass door (swings in), then a solid wall: the staff board
+  // hangs on its inside face and the window bar's whiteboard on its outside face.
+  { a: [11, 3.5], b: [11, 8], kind: "glass", openings: [{ at: 1.5, width: 1.0, kind: "glass-door", swing: 1 }] },
+  { a: [11, 8], b: [11, 13], kind: "partition" },
 
   // Reception feature wall
   { a: [3, 8.9], b: [8, 8.9], kind: "partition" },
@@ -281,9 +296,24 @@ export const DESKS: DeskSlot[] = BENCH_CENTERS_X.flatMap((cx, bench) =>
 /** Board manager desk in the team hub, facing the issue board, back kept off the glass. */
 export const PM_DESK: DeskSlot = { index: -1, desk: [14.5, -10.0], pos: [14.5, -10.8], facing: [0, 1] };
 
-export const ISSUE_BOARD = { x: 14.5, z: -6.5 - INTERIOR_WALL / 2 - 0.03, width: 5.6, height: 1.9, centerY: 1.55, facing: [0, -1] as XZ };
-/** Where you stand to read the board. */
-export const BOARD_FRONT: XZ = [14.5, -8.0];
+export const ISSUE_BOARD = { x: 14.5, z: -6.5 - INTERIOR_WALL / 2 - 0.03, width: 5.6, height: 2.6, centerY: 1.8, facing: [0, -1] as XZ };
+/** Where you stand to read the board (far enough back to take in its full height). */
+export const BOARD_FRONT: XZ = [14.5, -8.6];
+
+// ------------------------------------------------------------------ manager's office
+
+/**
+ * The floor manager's desk: in the south half of the corner office, back to the east glass
+ * (with a credenza behind), facing west across the room to the staff board.
+ */
+const MGR_Z = 10.3;
+export const MANAGER_DESK: DeskSlot = { index: -2, desk: [15.9, MGR_Z], pos: [16.7, MGR_Z], facing: [-1, 0] };
+/** Roster of everyone on the floor, on the inside of the office's west wall. */
+export const STAFF_BOARD = { x: 11 + INTERIOR_WALL / 2 + 0.03, z: MGR_Z, width: 4.0, height: 2.2, centerY: 1.75, facing: [1, 0] as XZ };
+export const STAFF_BOARD_FRONT: XZ = [13.4, MGR_Z];
+/** Nameplate over the office's glass door, read from the lobby. */
+export const MANAGER_SIGN = { x: 11 - 0.06, z: 5.0, y: DOOR_HEIGHT + 0.32, width: 1.6, height: 0.4, facing: [-1, 0] as XZ };
+export const MANAGER_DOOR: XZ = [11, 5.0];
 
 // ------------------------------------------------------------------ meeting (boardroom)
 
@@ -305,7 +335,7 @@ export const EXIT: XZ = [ELEVATOR_DOOR_X[1], 4.7];
 export const ELEVATOR_PANEL: XZ = [2.65, 4.4];
 export const PLAYER_START: XZ = [2.65, 5.6];
 export const PLAYER_START_YAW = 0.9; // facing reception
-export const FLOOR_SIGN = { x: 2.65, z: 4.25 + CORE_WALL / 2 + 0.02, y: 2.55, facing: [0, 1] as XZ };
+export const FLOOR_SIGN = { x: 2.65, z: 4.25 + CORE_WALL / 2 + 0.02, y: DOOR_HEIGHT + 0.55, facing: [0, 1] as XZ };
 
 // ------------------------------------------------------------------ hangouts (idle breaks)
 
@@ -330,9 +360,9 @@ export const HANGOUTS: Seat[] = [
   ...[-5.0, -4.0, -3.0].map((x) => ({ pos: [x, 11.8] as XZ, facing: [0, -1] as XZ })),
   // focus bar by the south glass (standing at the bar)
   ...[3.05, 5.0, 6.95].map((x) => ({ pos: [x, 11.85] as XZ, facing: [0, 1] as XZ, stand: true })),
-  // collaboration high table (standing)
-  { pos: [13.4, 8.0], facing: [1, 0], stand: true },
-  { pos: [15.6, 8.0], facing: [-1, 0], stand: true },
+  // high table at the east end of the window bar (standing)
+  { pos: [9.6, 9.45], facing: [0, 1], stand: true },
+  { pos: [9.6, 11.75], facing: [0, -1], stand: true },
 ];
 
 // ------------------------------------------------------------------ furniture
@@ -374,18 +404,44 @@ export const FURNITURE: Furniture[] = [
   ...[-5.1, -4.3, -3.5].flatMap((z) => [F("chair", 13.35, z, 0.55, 0.55, FACE.e), F("chair", 15.65, z, 0.55, 0.55, FACE.w)]),
   F("tv", 14.5, -1.5 - IW - 0.05, 1.8, 0.08, FACE.n),
 
-  // Phone rooms
+  // Phone room
   F("table-rect", 13.3, -0.25, 1.0, 0.6, FACE.w),
   F("chair", 12.6, -0.25, 0.55, 0.55, FACE.e),
-  F("table-rect", 13.3, 2.25, 1.0, 0.6, FACE.w),
-  F("chair", 12.6, 2.25, 0.55, 0.55, FACE.e),
 
-  // Wellness room (sink + small fridge; privacy film on the glazing)
-  F("armchair", 16.9, -0.6, 0.9, 0.9, FACE.w),
-  F("rug", 16.4, 0.6, 2.2, 2.4),
-  F("sink-counter", 15.2, 3.1, 1.0, 0.5, FACE.n),
-  F("fridge", 14.9, 2.3, 0.5, 0.55, FACE.e),
-  F("plant", 17.45, 3.0, 0.5, 0.5),
+  // Wellness room (sink + small fridge on the north wall, armchair in the far corner)
+  F("sink-counter", 13.3, 1 + IW + 0.25, 1.0, 0.5, FACE.s),
+  F("fridge", 14.15, 1 + IW + 0.3, 0.5, 0.55, FACE.s),
+  F("armchair", 13.85, 2.8, 0.85, 0.85, FACE.w),
+  F("rug", 12.7, 2.55, 1.6, 1.3),
+  F("plant", 11.4, 3.15, 0.45, 0.45),
+
+  // 1:1 room (the manager's, off their office): two chairs across a small table
+  F("table-rect", 16.25, 0.9, 1.2, 0.8),
+  F("chair", 16.25, 0.05, 0.55, 0.55, FACE.s),
+  F("chair", 16.25, 1.75, 0.55, 0.55, FACE.n),
+  F("plant", 17.45, -1.0, 0.5, 0.5),
+  F("plant", 15.0, -1.0, 0.5, 0.5),
+
+  // Manager's office. South half: desk facing west to the staff board, credenza behind it,
+  // two guest chairs across the desk. North half: a round table for four and a lounge
+  // against the east glass. Bookshelf along the north wall.
+  F("rug", 15.5, MGR_Z, 3.6, 3.2),
+  F("credenza", 17.6, MGR_Z, 2.2, 0.45, FACE.w),
+  F("chair", 14.75, MGR_Z - 0.55, 0.55, 0.55, FACE.e),
+  F("chair", 14.75, MGR_Z + 0.55, 0.55, 0.55, FACE.e),
+  F("bookshelf", 13.0, 3.5 + IW + 0.2, 3.2, 0.38),
+  F("table-round", 13.0, 6.4, 1.1, 1.1),
+  F("chair", 12.25, 6.4, 0.55, 0.55, FACE.e),
+  F("chair", 13.75, 6.4, 0.55, 0.55, FACE.w),
+  F("chair", 13.0, 5.65, 0.55, 0.55, FACE.s),
+  F("chair", 13.0, 7.15, 0.55, 0.55, FACE.n),
+  F("sofa", 17.3, 6.6, 2.6, 0.95, FACE.w),
+  F("coffee-table", 16.0, 6.6, 1.1, 0.6, FACE.w),
+  F("armchair", 16.0, 5.4, 0.85, 0.85, FACE.s),
+  F("armchair", 16.0, 7.8, 0.85, 0.85, FACE.n),
+  F("plant", 17.4, 12.4, 0.6, 0.6),
+  F("plant", 11.5, 12.5, 0.45, 0.45),
+  F("plant", 17.2, 4.05, 0.6, 0.6),
 
   // Kitchen & café: counter on the huddle room's south wall (acoustic), island 1.2 m off it
   F("counter", -14.4, 1.5 + IW + 0.33, 4.6, 0.65),
@@ -422,18 +478,14 @@ export const FURNITURE: Furniture[] = [
   F("armchair", 3.0, 10.3, 0.9, 0.9, FACE.e),
   F("armchair", 4.6, 10.3, 0.9, 0.9, FACE.w),
   F("table-round", 3.8, 10.3, 0.5, 0.5),
-  F("planter", 7.5, 10.3, 2.4, 0.5),
-  F("plant", 9.4, 12.4, 0.6, 0.6),
+  F("planter", 7.2, 10.3, 1.8, 0.5),
+  F("plant", 10.45, 12.4, 0.6, 0.6),
   F("plant", 1.6, 12.4, 0.6, 0.6),
   F("bookshelf", 5.5, 8.9 + IW + 0.2, 4.6, 0.38),
-
-  // Collaboration area
-  F("high-table", 14.5, 8.0, 1.2, 1.8),
-  F("whiteboard", 12.75, 3.5 + IW + 0.04, 3.0, 0.06, FACE.s),
-  F("sofa", 14.5, 12.3, 3.0, 0.95, FACE.n),
-  F("coffee-table", 14.5, 11.0, 1.4, 0.7),
-  F("plant", 17.4, 5.0, 0.6, 0.6),
-  F("plant", 11.6, 12.4, 0.6, 0.6),
+  // Collaboration corner at the bar's east end (moved here from the old collaboration area):
+  // a standing table by a whiteboard on the manager's office wall.
+  F("high-table", 9.6, 10.6, 1.8, 1.2),
+  F("whiteboard", 11 - IW - 0.04, 10.5, 2.4, 0.06, FACE.w),
 
   // Core: stairs (landing at the door end), elevator cars, restrooms on the chase, IT
   F("stair", -7.5, -1.45, 2.6, 5.4, Math.PI),
@@ -461,7 +513,7 @@ export const FURNITURE: Furniture[] = [
 
 /** Chairs at each desk seat. */
 export function deskChairs(): Furniture[] {
-  return [...DESKS, PM_DESK].map((d) => ({
+  return [...DESKS, PM_DESK, MANAGER_DESK].map((d) => ({
     kind: "chair",
     x: d.pos[0],
     z: d.pos[1],
@@ -490,7 +542,7 @@ export interface Decor {
   collide?: [number, number];
 }
 
-const WALL = (asset: string, x: number, z: number, rot: number, scale?: number): Decor => ({ asset, x, z, rot, wall: true, scale });
+const WALL = (asset: string, x: number, z: number, rot: number, scale?: number, y?: number): Decor => ({ asset, x, z, rot, wall: true, scale, y });
 const HANG = (asset: string, x: number, z: number, rot = 0): Decor => ({ asset, x, z, rot, ceiling: true });
 const FLOOR = (asset: string, x: number, z: number, rot = 0, collide?: [number, number], scale?: number): Decor => ({ asset, x, z, rot, collide, scale });
 
@@ -502,24 +554,34 @@ export const DECOR: Decor[] = [
   ...CAFE_TABLES.map(([x, z]) => HANG("pendant_lamp", x, z)),
   HANG("pendant_lamp", -15.2, 4.0),
   HANG("pendant_lamp", -13.6, 4.0),
-  HANG("pendant_lamp", 14.5, 8.0),
+  HANG("pendant_lamp", 9.6, 10.6), // window bar high table
+  // Manager's office: a linear pendant along the desk, one over the round table; 1:1 table
+  HANG("pendant_lamp_linear", MANAGER_DESK.desk[0], MANAGER_DESK.desk[1], Math.PI / 2),
+  HANG("pendant_lamp", 13.0, 6.4),
+  HANG("pendant_lamp", 16.25, 0.9),
+  // Window bar: a row of pendants over the counter
+  ...[3.05, 5.0, 6.95].map((x) => HANG("pendant_lamp", x, 12.35)),
   // Trailing plants along the north and south glazing
   ...[-6.5, -1.5, 3.5, 8.5].map((x) => HANG("plant_hanging", x, -12.45)),
   ...[-6.0, 0.0].map((x) => HANG("plant_hanging", x, 12.45)),
+  ...[13.0, 16.0].map((x) => HANG("plant_hanging", x, 12.45)),
   // Lounge
   // Arc lamp: base in the window corner, shade arcing out over the sofa (its front is the arc direction).
   FLOOR("floor_lamp", -7.0, 12.45, 2.15, [0.45, 0.45]),
   FLOOR("magazine_rack", -1.6, 12.4, Math.PI),
   // Wall art and clocks
   // Wall-mounted items face away from their wall: rot 0 faces south (+z), π faces north.
-  WALL("wall_art_a", -3.0, 4.25 + CORE_WALL / 2, 0), // lobby: core south face between the WC doors
-  WALL("wall_art_b", 7.0, 4.25 + CORE_WALL / 2, 0), // lobby: core south face east of the lifts
+  // The big lobby and aisle walls get larger prints (scaling also lifts them, to suit the tall walls).
+  WALL("wall_art_a", -3.0, 4.25 + CORE_WALL / 2, 0, 1.3), // lobby: core south face between the WC doors
+  WALL("wall_art_b", 7.0, 4.25 + CORE_WALL / 2, 0, 1.3), // lobby: core south face east of the lifts
   WALL("wall_art_c", -15.0, -2.5 - INTERIOR_WALL / 2, Math.PI), // quiet room: its south wall, facing north
   WALL("wall_art_a", 12.75, 1.0 - INTERIOR_WALL / 2, Math.PI), // phone room 1
-  WALL("wall_art_b", 5.5, -4.25 - CORE_WALL / 2, Math.PI), // main aisle: core north face, between Elec and Storage doors
-  WALL("wall_art_c", -7.0, -4.25 - CORE_WALL / 2, Math.PI), // main aisle: core north face by Stair 1
-  WALL("wall_clock", 2.65, -4.25 - CORE_WALL / 2, Math.PI), // main aisle, in view of the desks
-  WALL("wall_clock", -11.55, 1.5 + INTERIOR_WALL / 2, 0), // kitchen, above the water cooler
+  WALL("wall_art_b", 14.5 + INTERIOR_WALL / 2, 0.9, Math.PI / 2), // 1:1 room: its west wall, facing east
+  WALL("wall_art_b", 5.5, -4.25 - CORE_WALL / 2, Math.PI, 1.3), // main aisle: core north face, between Elec and Storage doors
+  WALL("wall_art_c", -7.0, -4.25 - CORE_WALL / 2, Math.PI, 1.3), // main aisle: core north face by Stair 1
+  // Clocks ride higher on the tall walls so they read over the desks and counters.
+  WALL("wall_clock", 2.65, -4.25 - CORE_WALL / 2, Math.PI, 1.2), // main aisle, in view of the desks (center ~2.65 m)
+  WALL("wall_clock", -11.55, 1.5 + INTERIOR_WALL / 2, 0, undefined, 0.3), // kitchen, above the water cooler (center 2.5 m)
   // Bins and utilities
   FLOOR("trash_bin", -10.2, -6.9, 0, [0.3, 0.3]),
   FLOOR("recycling_bin", -10.2, -7.3, 0, [0.3, 0.3]),
@@ -535,6 +597,8 @@ export const DECOR: Decor[] = [
   FLOOR("plant_fiddle", 17.3, -7.4, 0, [0.5, 0.5]),
   FLOOR("plant_monstera", -10.4, -12.3, 0, [0.5, 0.5]),
   FLOOR("plant_monstera", 10.4, -12.3, 0, [0.5, 0.5]),
-  FLOOR("rug_round", 14.5, 11.6, 0),
+  // Manager's office lounge, and a filing cabinet by the desk
+  FLOOR("rug_round", 16.2, 6.6, 0),
+  FLOOR("filing_cabinet", 17.55, 8.55, -Math.PI / 2, [0.6, 0.45]),
 ];
 

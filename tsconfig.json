@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["src", "server", "vite.config.ts"]
+  "include": ["src", "server", "electron", "scripts/build-app.ts", "scripts/render-icon.ts", "dev/icon.ts", "vite.config.ts"]
 }

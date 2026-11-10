@@ -14,19 +14,11 @@ export const ACTIVITY_COLORS: Record<Activity, string> = {
   idle: "#b9bccb",
 };
 
-const NAMES = [
-  "Pip", "Mochi", "Bix", "Nori", "Taro", "Juno", "Pebble", "Dot", "Fizz", "Boba", "Toast", "Waffle",
-  "Biscuit", "Gizmo", "Sprout", "Pixel", "Byte", "Chip", "Noodle", "Bean", "Puddle", "Ziggy", "Momo",
-  "Tofu", "Kiwi", "Miso", "Dumpling", "Scout", "Nugget", "Sushi", "Pickle", "Olive", "Muffin", "Peanut",
-  "Clover", "Bloop", "Wobble", "Zuzu", "Turnip", "Mango",
-];
+import { bloopName } from "../../shared/names.ts";
+export { bloopName };
 
 const HATS = ["none", "beanie", "sprout", "bow", "tophat", "headphones", "cap", "party"] as const;
 type Hat = (typeof HATS)[number] | "crown" | "visor";
-
-export function bloopName(id: string) {
-  return NAMES[hashString(id + "name") % NAMES.length];
-}
 
 export function bloopColor(id: string) {
   const h = hashString(id) % 360;

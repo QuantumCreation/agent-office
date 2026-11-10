@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import * as plan from "./floorplan.ts";
-import { DESKS, PM_SLOT, type DeskSlot } from "./layout.ts";
+import { DESKS, MANAGER_SLOT, PM_SLOT, type DeskSlot } from "./layout.ts";
 import { canvasTexture, flat, hashString, mesh, toon, toonUnique } from "./toon.ts";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { fitFootprint, InstancedPlacer, type AssetLibrary } from "./assets.ts";
@@ -51,9 +51,15 @@ export interface Office {
   colliders: Box2[];
   monitors: Monitor[]; // index = desk index
   pmMonitor: Monitor;
+  managerMonitor: Monitor;
   hireMarkers: THREE.Object3D[];
   pmMarker: THREE.Object3D;
+  managerMarker: THREE.Object3D;
   board: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture };
+  /** The roster on the manager's office wall. */
+  staffBoard: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture };
+  /** Nameplate over the manager's door. */
+  managerSign: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture };
   sign: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture };
   setTheme(theme: Theme): void;
   /** Overview mode: hide the ceiling and cut the walls down so you can see in from above. */
@@ -79,8 +85,9 @@ export const THEMES: Theme[] = [
 ];
 
 const H = plan.CEILING_HEIGHT;
-const DOOR_H = 2.15;
-const CUTAWAY_SCALE = 0.36;
+const DOOR_H = plan.DOOR_HEIGHT;
+/** In the overview, walls are cut down to about this height (meters). */
+const CUTAWAY_SCALE = 1.05 / H;
 
 const G = {
   box: new THREE.BoxGeometry(1, 1, 1),
@@ -159,6 +166,9 @@ export function buildOffice(lib?: AssetLibrary): Office {
   const accentCarpetMat = toonUnique("#d6cfe8");
   const accentMat = accentMaterial;
   const placer = new InstancedPlacer();
+  // Wall-hung models go with the walls (cut down in the overview); ceiling-hung ones with the ceiling.
+  const wallPlacer = new InstancedPlacer();
+  const hungPlacer = new InstancedPlacer();
   const has = (name: string) => !!lib?.has(name);
   const chairMat = toonUnique("#6f9de0");
   const wallMat = toonUnique("#f3efe6");
@@ -255,14 +265,18 @@ export function buildOffice(lib?: AssetLibrary): Office {
     if (cur < len) solidSpans.push([cur, len]);
 
     if (w.kind === "exterior") {
-      // Curtain wall: spandrel, clear glass (the city is real geometry outside), mullions every 1.5 m, head.
-      slab(w, 0, len, 0, 0.45, t, wallMat);
-      slab(w, 0, len, 2.7, H, t, wallMat);
-      const win = slab(w, 0, len, 0.45, 2.7, 0.02, exteriorGlass, 0);
+      // Curtain wall: low spandrel, tall clear glass (the city is real geometry outside),
+      // mullions every 1.5 m, a slim head under the ceiling.
+      const sill = plan.WINDOW_SILL;
+      const head = plan.WINDOW_HEAD;
+      slab(w, 0, len, 0, sill, t, wallMat);
+      slab(w, 0, len, head, H, t, wallMat);
+      const win = slab(w, 0, len, sill, head, 0.02, exteriorGlass, 0);
       win.renderOrder = 3;
       win.castShadow = false;
-      for (let s = 0; s <= len + 1e-6; s += 1.5) slab(w, s - 0.03, s + 0.03, 0.45, 2.7, 0.14, mullionMat);
-      slab(w, 0, len, 0.42, 0.48, 0.2, mullionMat, 0); // sill
+      for (let s = 0; s <= len + 1e-6; s += 1.5) slab(w, s - 0.03, s + 0.03, sill, head, 0.14, mullionMat);
+      slab(w, 0, len, sill - 0.03, sill + 0.03, 0.2, mullionMat, 0); // sill
+      slab(w, 0, len, head - 0.02, head + 0.02, 0.16, mullionMat, 0); // head rail
       addCollider(w.a[0], w.a[1], w.b[0], w.b[1], t);
       continue;
     }
@@ -276,6 +290,8 @@ export function buildOffice(lib?: AssetLibrary): Office {
         slab(w, s0, s1, 0, 0.08, 0.07, frameMat);
         slab(w, s0, s1, H - 0.08, H, 0.07, frameMat);
         for (let s = s0; s <= s1 + 1e-6; s += Math.max(0.6, (s1 - s0) / Math.ceil((s1 - s0) / 1.2))) slab(w, s - 0.025, s + 0.025, 0, H, 0.07, frameMat);
+        // transom rail in line with the door heads, so the tall glass reads as clerestory above
+        slab(w, s0, s1, DOOR_H - 0.03, DOOR_H + 0.03, 0.07, frameMat);
         // privacy band
         slab(w, s0, s1, 1.1, 1.35, 0.035, toon("#ffffff", { transparent: 0.55 }));
       } else {
@@ -386,6 +402,7 @@ export function buildOffice(lib?: AssetLibrary): Office {
   const useDeskAssets = has("bench_desk") && has("monitor");
   const monitors: Monitor[] = DESKS.map((slot) => (useDeskAssets ? placeDesk(slot, root, placer, lib!) : buildDesk(slot, root, chairMat)));
   const pmMonitor = useDeskAssets ? placeDesk(PM_SLOT, root, placer, lib!) : buildDesk(PM_SLOT, root, toon("#ffb347"));
+  const managerMonitor = useDeskAssets ? placeDesk(MANAGER_SLOT, root, placer, lib!) : buildDesk(MANAGER_SLOT, root, toon("#7a5cc4"));
   if (useDeskAssets && has("desk_divider")) {
     for (const cx of plan.BENCH_CENTERS_X) for (const z of plan.BENCH_DESK_Z) placer.add("desk_divider", cx, DESK_TOP, z, { rotY: Math.PI / 2 });
   }
@@ -394,16 +411,19 @@ export function buildOffice(lib?: AssetLibrary): Office {
     const z1 = Math.max(...plan.BENCH_DESK_Z) + plan.DESK_W / 2;
     colliders.push({ minX: cx - plan.DESK_D, maxX: cx + plan.DESK_D, minZ: z0, maxZ: z1 });
   }
-  {
-    const [x, z] = plan.PM_DESK.desk;
-    colliders.push({ minX: x - plan.DESK_W / 2, maxX: x + plan.DESK_W / 2, minZ: z - plan.DESK_D / 2, maxZ: z + plan.DESK_D / 2 });
+  for (const d of [plan.PM_DESK, plan.MANAGER_DESK]) {
+    // Desks are long across the direction their agent faces.
+    const [x, z] = d.desk;
+    const hx = (d.facing[0] !== 0 ? plan.DESK_D : plan.DESK_W) / 2;
+    const hz = (d.facing[0] !== 0 ? plan.DESK_W : plan.DESK_D) / 2;
+    colliders.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz });
   }
 
   // ---------------------------------------------------------------- furniture
   for (const f of plan.FURNITURE) {
     if (inService(f.x, f.z)) continue;
     if (useDeskAssets && f.kind === "divider" && has("desk_divider")) continue;
-    const placedAsset = lib ? placeFurnitureAsset(f, placer, lib) : false;
+    const placedAsset = lib ? placeFurnitureAsset(f, WALL_MOUNTED.has(f.kind) ? wallPlacer : placer, lib) : false;
     if (placedAsset) {
       if (!NO_COLLIDE.has(f.kind)) addFootprintCollider(f);
       continue;
@@ -416,19 +436,18 @@ export function buildOffice(lib?: AssetLibrary): Office {
     if (!NO_COLLIDE.has(f.kind)) addFootprintCollider(f);
   }
 
-  // Decor: pure set dressing from the plan (only drawn when its model exists).
+  // Decor: pure set dressing from the plan (only drawn when its model exists). Ceiling-hung
+  // items live in the ceiling group so they hide with it in the cutaway overview.
   if (lib) {
     for (const d of plan.DECOR) {
       if (!has(d.asset)) continue;
-      const wallMounted = d.y === undefined && d.wall;
-      placer.add(d.asset, d.x, d.y ?? (d.ceiling ? H : 0), d.z, { rotY: d.rot ?? 0, scale: d.scale, tint: d.tint });
+      (d.ceiling ? hungPlacer : d.wall ? wallPlacer : placer).add(d.asset, d.x, d.y ?? (d.ceiling ? H : 0), d.z, { rotY: d.rot ?? 0, scale: d.scale, tint: d.tint });
       if (d.collide) addFootprintCollider({ x: d.x, z: d.z, w: d.collide[0], d: d.collide[1], rot: d.rot ?? 0 });
-      void wallMounted;
     }
   }
-  const instancedDrawCalls = lib ? placer.build(lib, root) : 0;
+  const instancedDrawCalls = lib ? placer.build(lib, root) + wallPlacer.build(lib, walls) + hungPlacer.build(lib, ceiling) : 0;
   const chairTop = useDeskAssets ? lib!.get("office_chair_top") : undefined;
-  const chairs = chairTop && lib!.has("office_chair_base") ? new SwivelChairs(chairTop, [...DESKS, PM_SLOT], root) : null;
+  const chairs = chairTop && lib!.has("office_chair_base") ? new SwivelChairs(chairTop, [...DESKS, PM_SLOT, MANAGER_SLOT], root) : null;
   root.userData.instancedDrawCalls = instancedDrawCalls;
 
   function addFootprintCollider(f: { x: number; z: number; w: number; d: number; rot: number }) {
@@ -464,9 +483,13 @@ export function buildOffice(lib?: AssetLibrary): Office {
   pmMarker.scale.set(0.42, 0.42, 1);
   pmMarker.position.copy(PM_SLOT.pos).setY(1.15);
   root.add(pmMarker);
+  const managerMarker = new THREE.Sprite(hireMat);
+  managerMarker.scale.set(0.42, 0.42, 1);
+  managerMarker.position.copy(MANAGER_SLOT.pos).setY(1.15);
+  root.add(managerMarker);
 
   // Issue board (on the hub's south wall, facing north)
-  const board = makeCanvas(1024, 340);
+  const board = makeCanvas(1024, Math.round((1024 * plan.ISSUE_BOARD.height) / plan.ISSUE_BOARD.width));
   {
     const b = plan.ISSUE_BOARD;
     const yaw = Math.atan2(b.facing[0], b.facing[1]);
@@ -479,6 +502,30 @@ export function buildOffice(lib?: AssetLibrary): Office {
     g.add(box(b.width + 0.12, b.height + 0.12, 0.03, frameMat, 0, 0, 0, false));
     g.add(box(b.width, 0.05, 0.12, toon("#c9ced9"), 0, -b.height / 2 - 0.06, 0.06, false));
     walls.add(g);
+  }
+
+  // Staff board (inside the manager's office, on the west wall, facing east): a wood-framed roster
+  const staffBoard = makeCanvas(1024, Math.round((1024 * plan.STAFF_BOARD.height) / plan.STAFF_BOARD.width));
+  {
+    const b = plan.STAFF_BOARD;
+    const g = new THREE.Group();
+    g.position.set(b.x, b.centerY, b.z);
+    g.rotation.y = Math.atan2(b.facing[0], b.facing[1]);
+    const face = new THREE.Mesh(new THREE.PlaneGeometry(b.width, b.height), new THREE.MeshBasicMaterial({ map: staffBoard.texture, toneMapped: false }));
+    face.position.z = 0.025;
+    g.add(face);
+    g.add(box(b.width + 0.16, b.height + 0.16, 0.04, toon("#8a6440"), 0, 0, 0, false));
+    walls.add(g);
+  }
+
+  // Nameplate over the manager's glass door, facing the lobby
+  const managerSign = makeCanvas(512, 128);
+  {
+    const s = plan.MANAGER_SIGN;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(s.width, s.height), new THREE.MeshBasicMaterial({ map: managerSign.texture, toneMapped: false, transparent: true }));
+    m.position.set(s.x, s.y, s.z);
+    m.rotation.y = Math.atan2(s.facing[0], s.facing[1]);
+    walls.add(m);
   }
 
   // Floor sign above the elevators
@@ -510,7 +557,7 @@ export function buildOffice(lib?: AssetLibrary): Office {
   }
 
   mergeStatic(walls);
-  return { root, colliders, monitors, pmMonitor, hireMarkers, pmMarker, board, sign, setTheme, setCutaway, chairs };
+  return { root, colliders, monitors, pmMonitor, managerMonitor, hireMarkers, pmMarker, managerMarker, board, staffBoard, managerSign, sign, setTheme, setCutaway, chairs };
 }
 
 // ------------------------------------------------------------------ static merge

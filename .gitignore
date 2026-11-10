@@ -5,3 +5,5 @@ data/
 .office-dev.log
 __pycache__/
 *.pyc
+build/
+release/

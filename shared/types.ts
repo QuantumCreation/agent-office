@@ -3,6 +3,8 @@
 export const DESK_COUNT = 24;
 /** Desk index used for a floor's issue-board PM agent. */
 export const PM_DESK = -1;
+/** Desk index used for a floor's manager (the desk in the corner office). */
+export const MANAGER_DESK = -2;
 
 export type Activity = "working" | "needs-input" | "done" | "error" | "idle";
 
@@ -27,9 +29,13 @@ export interface AgentInfo {
   updatedAt: string;
   link: string | null;
   lastError: string | null;
-  /** Desk index on its project's floor, PM_DESK for the board manager, null if no seat. */
+  /** Desk index on its project's floor, PM_DESK / MANAGER_DESK for those two, null if no seat. */
   desk: number | null;
   isPm: boolean;
+  /** The floor manager: hires, briefs, checks on and fires the floor's agents. Doesn't write code. */
+  isManager: boolean;
+  /** The boss's intern: no desk, follows the boss from floor to floor. */
+  isIntern: boolean;
 }
 
 /** A ticket's column id (see BoardSettings.columns). "" means it fits no column. */
@@ -105,9 +111,27 @@ export interface OfficeSnapshot {
   agents: AgentInfo[];
   issues: Issue[];
   pm: Record<string, string>;
+  /** Floor manager thread per project id. */
+  managers: Record<string, string>;
+  /** Recent hires and firings, newest last. */
+  staffLog: StaffLogEntry[];
   /** Board settings per project id. */
   boards: Record<string, BoardState>;
   bridgeUrl: string;
+}
+
+/** Who did a hire or a firing: "boss" (you, in the office), "manager", "pm", or another label. */
+export interface StaffLogEntry {
+  id: string;
+  projectId: string;
+  at: string;
+  action: "hire" | "fire";
+  threadId: string;
+  /** The agent's name and job title at the time. */
+  name: string;
+  title: string;
+  by: string;
+  reason: string | null;
 }
 
 export interface ActivityItem {

@@ -10,11 +10,12 @@ Every floor of the building uses the same plan (each floor is a different projec
 
 Program:
 - 24 workstations, plus 1 desk for the team's project manager next to a large issue/kanban board.
+- A corner office for the floor manager (who staffs the floor), with a private 1:1 room and a staff board.
 - One 8-person meeting room (boardroom) and smaller rooms (huddle, meeting, phone, quiet, wellness).
 - Kitchen/café, lounge, collaboration area.
 - Elevator lobby with reception. People arrive and leave by elevator.
 - Building core: 2 elevators, 2 egress stairs, restrooms, IT, janitor, risers, storage.
-- Ceiling height 2.9 m. Glazed curtain wall on all four sides.
+- Ceiling height 3.6 m (4.0 m floor to floor). Glazed curtain wall on all four sides, glass from a 0.3 m sill to 3.3 m. Doors are 2.4 m tall; glass partitions carry a transom rail at door-head height.
 
 ## Game constraints (must keep)
 
@@ -46,6 +47,18 @@ Changes made in revision 2:
 | 7 | Furniture through the glazing; water cooler in the corridor | Fridge, sofas and cooler moved. |
 | 8 | Dead space in the south strip | It became a focus bar along the south glass. |
 | 9 | Minor items | Elevator cars resized to 1.6 × 2.4 m in proper hoistways. PM desk moved off the glass. Boardroom door aligned with the main aisle. Kitchen island at 1.2 m from the counter. Elec room moved off the wet riser. IT rack clearances fixed. Wellness room got a sink and fridge. Orphan strip of floor absorbed. |
+
+## Revision 3: the manager's office
+
+The floor gained a manager: an agent who hires, briefs, checks on and fires the other agents. They get the southeast corner.
+
+| Area | Change |
+|---|---|
+| Manager's office (67 m², was the collaboration area) | Corner office with curtain wall on the south and east sides and a glass front onto the lobby. The glass door (with a nameplate above it) is at the lobby end of the east corridor. Wood floor. In the south half, the desk faces west across the room to the staff board, with its back to the east glass, a credenza and filing cabinet behind it, and two guest chairs. In the north half, a round table for four, a lounge (sofa against the glass, two armchairs, coffee table) and a bookshelf along the north wall. |
+| 1:1 room (18 m², was the wellness room) | Opens only off the manager's office, through the existing door in its north wall. Two chairs across a small table, for check-ins with agents. |
+| Wellness room (8.8 m², was phone room 2) | Keeps its sink, small fridge and armchair, and opens onto the east corridor. The floor now has one phone room. |
+| Window bar | Takes over the collaboration area's standing high table (its two break spots move with it), with a whiteboard on the manager's office wall behind it. The planter shrinks to make room. |
+| Lobby | The two armchairs east of reception now double as a waiting area outside the manager's door. |
 
 ## Assumptions
 

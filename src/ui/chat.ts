@@ -299,7 +299,7 @@ export class OfficeChat {
     return h(
       "span",
       { class: `chat-avatar ${size}`, style: `background:${this.host.colorOf(a.id)}` },
-      name.replace(/^PM /, "")[0] ?? "?",
+      name.replace(/^(PM|Manager|Intern) /, "")[0] ?? "?",
       h("span", { class: `chat-presence ${a.activity}` }),
     );
   }
@@ -314,7 +314,7 @@ export class OfficeChat {
           "button",
           {
             class: `chat-rail-item ${a.id === this.selected ? "on" : ""} ${unread ? "unread" : ""} ${a.activity}`,
-            title: `${name} · ${this.host.floorLabel(a.projectId)}\n${a.title}\n${ACTIVITY_TEXT[a.activity] ?? a.activity}`,
+            title: `${name} · ${this.where(a)}\n${a.title}\n${ACTIVITY_TEXT[a.activity] ?? a.activity}`,
             onclick: () => this.select(a.id),
           },
           this.avatar(a, "md"),
@@ -334,23 +334,28 @@ export class OfficeChat {
       h(
         "div",
         { class: "chat-who" },
-        h("div", { class: "chat-name" }, name, a.isPm ? h("span", { class: "tag" }, "PM") : null),
+        h("div", { class: "chat-name" }, name, a.isManager ? h("span", { class: "tag" }, "Manager") : a.isPm ? h("span", { class: "tag" }, "PM") : a.isIntern ? h("span", { class: "tag" }, "Intern") : null),
         h(
           "div",
           { class: "chat-sub" },
           h("span", { class: `pill ${a.activity}` }, ACTIVITY_TEXT[a.activity] ?? a.activity),
-          h("span", { class: "chat-floor" }, this.host.floorLabel(a.projectId)),
+          h("span", { class: "chat-floor" }, this.where(a)),
         ),
         h("div", { class: "chat-title", title: a.title }, a.title),
       ),
-      h("button", { class: "icon-btn", title: "Walk over to their desk", onclick: () => this.host.walkTo(a.id) }, "🚶"),
+      h("button", { class: "icon-btn", title: a.isIntern ? "Call them over" : "Walk over to their desk", onclick: () => this.host.walkTo(a.id) }, a.isIntern ? "👋" : "🚶"),
       ...(a.link ? [h("a", { class: "icon-btn", title: "Open in T3 Code", href: a.link, target: "_blank", rel: "noreferrer" }, "↗")] : []),
     );
-    const name1 = name.replace(/^PM /, "");
+    const name1 = name.replace(/^(PM|Manager|Intern) /, "");
     this.input.placeholder = `Message ${name1}`;
     this.typingEl.replaceChildren(
       ...(a.activity === "working" ? [h("span", { class: "chat-dots" }, h("i"), h("i"), h("i")), ` ${name1} is working…`] : []),
     );
+  }
+
+  /** Which floor someone's on. The intern has no floor: they're wherever you are. */
+  private where(a: AgentInfo) {
+    return a.isIntern ? "follows you around" : this.host.floorLabel(a.projectId);
   }
 
   private autosize() {

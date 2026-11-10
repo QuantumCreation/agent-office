@@ -13,6 +13,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { canvasTexture, flat, hashString, mesh, toon } from "./toon.ts";
+import { CEILING_HEIGHT, FLOOR_TO_FLOOR, WINDOW_HEAD, WINDOW_SILL } from "./floorplan.ts";
 
 /** Time-of-day lighting for the city, produced by DayNight. */
 export interface CityEnv {
@@ -55,8 +56,8 @@ export interface City {
 const TX = 18.4; // our tower's half-extent in x (shell plane)
 const TZ = 13.4; // ... and in z
 const HOLE_Y0 = -0.4; // the office floor occupies HOLE_Y0..HOLE_Y1 (world space)
-const HOLE_Y1 = 3.3;
-const STOREY = 4.0;
+const HOLE_Y1 = CEILING_HEIGHT + 0.3;
+const STOREY = FLOOR_TO_FLOOR;
 const TOWER_ROOF = 182; // our tower's roof, meters above the street
 const SIDEWALK = 4;
 const HORIZON = "#dde9f2";
@@ -521,8 +522,8 @@ function paintShell(): FacadeTex {
   e.fillRect(0, 0, W, H);
   for (let j = 0; j < 8; j++) {
     const bottom = H - j * ch; // canvas y of this storey's floor line
-    // Glass band 0.45 .. 2.7 m, like the office's own curtain wall.
-    const gy0 = bottom - row(2.7), gy1 = bottom - row(0.45);
+    // Glass band from sill to head, like the office's own curtain wall.
+    const gy0 = bottom - row(WINDOW_HEAD), gy1 = bottom - row(WINDOW_SILL);
     // A floor's worth of lights tends to be on or off together.
     const floorLit = r() < 0.35 ? 0.35 : 0.06;
     for (let i = 0; i < 16; i++) {
@@ -530,14 +531,14 @@ function paintShell(): FacadeTex {
       const kind: Pane = v < floorLit ? "lit" : v < floorLit + 0.15 ? "blind" : v < floorLit + 0.25 ? "dark" : "glass";
       pane(d, e, i * cw, gy0, cw, gy1 - gy0, kind, "#4d5562");
     }
-    // Slab edge band (3.55 .. 4.0 m).
+    // Slab edge band (the top 0.4 m of the storey, above the ceiling).
     d.fillStyle = "#aab5c4";
-    d.fillRect(0, bottom - ch, W, row(0.45));
+    d.fillRect(0, bottom - ch, W, row(0.4));
     d.fillStyle = "#eef2f6";
-    d.fillRect(0, bottom - ch + row(0.45), W, 2);
+    d.fillRect(0, bottom - ch + row(0.4), W, 2);
     // Spandrel seam.
     d.fillStyle = "#c3ccd8";
-    d.fillRect(0, bottom - row(0.2), W, 1);
+    d.fillRect(0, bottom - row(WINDOW_SILL / 2), W, 1);
   }
   d.fillStyle = "#6d7385";
   e.fillStyle = "#000";

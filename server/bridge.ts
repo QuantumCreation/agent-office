@@ -4,12 +4,17 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { T3Client } from "./t3.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { T3Client, T3_HOME } from "./t3.ts";
 import { Store, type StoredBoard } from "./store.ts";
+import { createManager } from "./manager.ts";
+import { bloopName } from "../shared/names.ts";
 import * as gitlab from "./gitlab.ts";
 import { applyBoardPatch, BoardSettingsError, defaultBoardSettings, slugify, WALL_MAX_COLUMNS } from "../shared/board.ts";
 import {
   DESK_COUNT,
+  MANAGER_DESK,
   PM_DESK,
   type Activity,
   type ActivityItem,
@@ -30,6 +35,11 @@ type Next = (err?: unknown) => void;
 const RUNNING = new Set(["preparing", "queued", "starting", "running"]);
 const POLL_MS = 1500;
 const GITLAB_SYNC_MS = 30_000;
+/**
+ * Messages to the intern start with a line saying which floor the boss is on, so "this project"
+ * means something. The office strips it again when showing the conversation.
+ */
+const FLOOR_CONTEXT = /^\[Office: [^\]\n]*\]\n\n/;
 
 export interface BridgeOptions {
   dataFile: string;
@@ -52,13 +62,28 @@ export function createBridge(options: BridgeOptions) {
     agents: [],
     issues: store.data.issues,
     pm: store.data.pm,
+    managers: store.data.managers,
+    staffLog: [],
     boards: {},
     bridgeUrl: options.publicUrl(),
   };
   let lastSent = "";
   let rawThreads = new Map<string, Json>();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When an intern is being recruited: their new thread stays hidden until we know it's them. */
+  let internStarting = 0;
   let polling = false;
+
+  // The floor managers (server/manager.ts): their API, roster, staff log and finish notices.
+  const manager = createManager({
+    store,
+    t3,
+    publicUrl: options.publicUrl,
+    snapshot: () => snapshot,
+    present: (id) => rawThreads.has(id),
+    poll: () => void poll(),
+    httpError,
+  });
 
   // ---------------------------------------------------------------- polling
 
@@ -75,6 +100,45 @@ export function createBridge(options: BridgeOptions) {
       return unseen ? "done" : "idle";
     }
     return "idle";
+  }
+
+  /**
+   * Laid-off agents are settled (not archived) in T3, so their threads stay in the shell; the
+   * office keeps them out until the thread is un-settled (e.g. you pick it back up in T3).
+   */
+  function isLaidOff(t: Json) {
+    const at = store.data.laidOff[t.id];
+    if (!at) return false;
+    const since = Date.parse(at);
+    const unsettled = t.unsettledAt && Date.parse(t.unsettledAt) > since;
+    // Grace period so a poll that raced the settle doesn't bring them straight back.
+    const stillOpen = !t.settledAt && Date.now() - since > 15_000;
+    if (unsettled || stillOpen) {
+      delete store.data.laidOff[t.id];
+      store.save();
+      return false;
+    }
+    return true;
+  }
+
+  /** Lay an agent off: stop it if it's mid-run, settle its thread, and free its desk. */
+  async function layOff(threadId: string, opts: { by?: string; reason?: string | null } = {}) {
+    const by = opts.by ?? "api";
+    manager.checkFire(threadId, by);
+    const raw = rawThreads.get(threadId);
+    store.data.laidOff[threadId] = new Date().toISOString();
+    try {
+      if (raw && RUNNING.has(String(raw.status))) await t3.stop(threadId).catch(() => {});
+      await t3.settle(threadId);
+    } catch (error) {
+      delete store.data.laidOff[threadId];
+      throw error;
+    }
+    manager.onFired(threadId, by, opts.reason ?? null);
+    delete store.data.desks[threadId];
+    for (const [pid, tid] of Object.entries(store.data.pm)) if (tid === threadId) delete store.data.pm[pid];
+    if (store.data.intern === threadId) store.data.intern = null;
+    store.save();
   }
 
   function assignDesks(agents: AgentInfo[]) {
@@ -98,8 +162,20 @@ export function createBridge(options: BridgeOptions) {
       const reserved = new Set(deskReservations.get(projectId) ?? []);
       for (const a of list) {
         const seat = desks[a.id];
+        if (a.isIntern) {
+          // The intern follows the boss around instead of sitting at a desk.
+          if (seat) {
+            delete desks[a.id];
+            changed = true;
+          }
+          continue;
+        }
         if (a.isPm) {
           a.desk = PM_DESK;
+          continue;
+        }
+        if (a.isManager) {
+          a.desk = MANAGER_DESK;
           continue;
         }
         if (seat && seat.projectId === projectId && seat.desk >= 0 && seat.desk < DESK_COUNT && !taken.has(seat.desk)) {
@@ -108,7 +184,7 @@ export function createBridge(options: BridgeOptions) {
         }
       }
       const newcomers = list
-        .filter((a) => a.desk === null && !a.isPm)
+        .filter((a) => a.desk === null && !a.isPm && !a.isManager && !a.isIntern)
         .sort((x, y) => Date.parse(y.updatedAt) - Date.parse(x.updatedAt));
       for (const a of newcomers) {
         let desk = -1;
@@ -154,10 +230,13 @@ export function createBridge(options: BridgeOptions) {
         .map((p: Json) => ({ id: p.id, title: p.title, workspaceRoot: p.workspaceRoot }));
       const projectIds = new Set(projects.map((p) => p.id));
       const pmIds = new Set(Object.values(store.data.pm));
+      const managerIds = new Set(Object.values(store.data.managers));
       rawThreads = new Map();
       const agents: AgentInfo[] = [];
       for (const t of shell.threads ?? []) {
         if (t.archivedAt || t.deletedAt) continue;
+        if (isLaidOff(t)) continue;
+        if (internStarting && t.title === "Intern" && t.id !== store.data.intern && Date.parse(t.createdAt) >= internStarting - 5000) continue;
         if (!projectIds.has(t.projectId)) continue;
         if (t.lineage?.relationshipToParent === "subagent") continue;
         rawThreads.set(t.id, t);
@@ -178,7 +257,16 @@ export function createBridge(options: BridgeOptions) {
           lastError: t.lastError ?? null,
           desk: null,
           isPm: pmIds.has(t.id),
+          isManager: managerIds.has(t.id),
+          isIntern: t.id === store.data.intern,
         });
+      }
+      // Laid-off threads that were archived since don't need remembering.
+      for (const t of shell.archivedThreads ?? []) {
+        if (store.data.laidOff[t.id]) {
+          delete store.data.laidOff[t.id];
+          store.save();
+        }
       }
       // Forget PMs whose threads are gone.
       for (const [pid, tid] of Object.entries(store.data.pm)) {
@@ -187,8 +275,14 @@ export function createBridge(options: BridgeOptions) {
           store.save();
         }
       }
+      // Forget the intern if their thread is gone.
+      if (store.data.intern && !rawThreads.has(store.data.intern)) {
+        store.data.intern = null;
+        store.save();
+      }
       assignDesks(agents);
       updateIssuesFromActivity(agents);
+      manager.onPoll(agents);
       snapshot = {
         connected: true,
         error: null,
@@ -196,6 +290,8 @@ export function createBridge(options: BridgeOptions) {
         agents,
         issues: store.data.issues,
         pm: store.data.pm,
+        managers: store.data.managers,
+        staffLog: snapshot.staffLog,
         boards: snapshot.boards,
         bridgeUrl: options.publicUrl(),
       };
@@ -217,6 +313,8 @@ export function createBridge(options: BridgeOptions) {
   function broadcast(force = false) {
     snapshot.issues = store.data.issues;
     snapshot.pm = store.data.pm;
+    snapshot.managers = store.data.managers;
+    snapshot.staffLog = store.data.staffLog.slice(-100);
     snapshot.boards = boardsSnapshot();
     const body = JSON.stringify(snapshot);
     if (!force && body === lastSent) return;
@@ -236,7 +334,7 @@ export function createBridge(options: BridgeOptions) {
     const clip = (s: unknown, n = 4000) => String(s ?? "").slice(0, n);
     switch (item.type) {
       case "user_message":
-        return { ...base, type: "user", text: clip(item.text) };
+        return { ...base, type: "user", text: clip(String(item.text ?? "").replace(FLOOR_CONTEXT, "")) };
       case "assistant_message":
         return { ...base, type: "assistant", text: clip(item.text, 8000) };
       case "reasoning":
@@ -698,10 +796,82 @@ ${boardGuide(project.id)}
 
 The full, current API guide is always at: curl -s '${base}/api/board/guide?projectId=${project.id}'
 
-Prefer assigning to idle agents whose title fits the work; hire a new agent when nobody fits. Keep replies short and say what you changed on the board. Start by checking the board and the agents, then say hi to the boss in one or two sentences and wait for instructions.`;
+Prefer assigning to idle agents whose title fits the work; hire a new agent when nobody fits. Don't assign tickets to the floor manager (isManager in the agent list): they staff the floor and don't write code, though they may ask you for tickets. Keep replies short and say what you changed on the board. Start by checking the board and the agents, then say hi to the boss in one or two sentences and wait for instructions.`;
   }
 
-  async function hire(projectId: string, opts: { message: string; title?: string; model?: string; provider?: string; desk?: number }) {
+  // ---------------------------------------------------------------- the intern
+
+  /**
+   * The intern's thread has to live in some T3 project. T3's own "No project" scratch space fits
+   * best (they aren't tied to any project), then a project at your home folder, then any project.
+   */
+  function internHome(): ProjectInfo | undefined {
+    const scratch = join(T3_HOME, "scratch");
+    const ps = snapshot.projects;
+    return ps.find((p) => p.workspaceRoot === scratch) ?? ps.find((p) => p.title === "No project") ?? ps.find((p) => p.workspaceRoot === homedir()) ?? ps[0];
+  }
+
+  function floorContext(projectId: unknown): string {
+    const p = snapshot.projects.find((x) => x.id === projectId);
+    return p ? `[Office: the boss is on the "${p.title}" floor (project folder: ${p.workspaceRoot}, project id: ${p.id})]\n\n` : "";
+  }
+
+  function internBrief(firstAsk?: string) {
+    const base = options.publicUrl();
+    const floors = snapshot.projects.map((p) => `- "${p.title}": ${p.workspaceRoot} (project id ${p.id})`).join("\n");
+    return `You are the boss's intern in Agent Office, a 3D office where coding agents (T3 Code threads) work at desks, one floor per project. Unlike everyone else you have no desk and no project of your own: you follow the boss around from floor to floor and help with whatever they ask.
+
+What the boss will ask you:
+- How something works in one of their projects. Read the code (use the absolute paths below) and explain it plainly, citing file paths. Don't change a project's files unless the boss explicitly asks you to. For bigger feature work, suggest hiring an agent on that floor.
+- General questions and errands: explanations, research, looking things up, quick scripts, drafts, anything an eager assistant could do.
+- What's going on in the office: who's working on what, and what's on each floor's issue board.
+
+Where the boss is: each message from the boss starts with a line like [Office: the boss is on the "<floor>" floor (project folder: <path>, ...)]. When they say "this project", "here" or "this code", they mean that floor's project. If there's no such line, they're talking to you from somewhere else.
+
+The floors (T3 Code projects) right now:
+${floors}
+The list can change. Current list: curl -s '${base}/api/projects'
+
+Office API (JSON over HTTP, use curl):
+- Agents and what they're on (id, title, activity, projectId): curl -s '${base}/api/agents'   (add ?projectId=<id> for one floor)
+- What an agent has been doing (their recent messages and tool calls): curl -s '${base}/api/threads/<agent id>'
+- A floor's issue board: curl -s '${base}/api/issues?projectId=<id>'   Full board API: curl -s '${base}/api/board/guide?projectId=<id>'
+- Only when the boss asks you to:
+  - Pass a message to an agent: curl -s -X POST ${base}/api/threads/<agent id>/send -H 'content-type: application/json' -d '{"text":"..."}'
+  - Hire an agent on a floor: curl -s -X POST ${base}/api/hire -H 'content-type: application/json' -d '{"projectId":"<id>","message":"<their task>","title":"<short job title>"}'
+
+How to work: you're an intern, so be eager, quick, and honest about what you don't know. The boss reads your replies in a small chat panel while walking around, so keep them short: lead with the answer, then the detail that matters. Ask before doing anything destructive or that other people would see.
+
+${firstAsk ? `The boss's first request:\n\n${firstAsk}` : "Say hi to the boss in one short sentence, then wait for instructions."}`;
+  }
+
+  /** Recruits the intern (there's only ever one). `floorId` is where the boss is right now. */
+  async function recruitIntern(opts: { message?: string; model?: string; provider?: string; floorId?: string }) {
+    const existing = store.data.intern;
+    if (existing && rawThreads.has(existing)) return existing;
+    const home = internHome();
+    if (!home) throw httpError(409, "There are no T3 Code projects yet. Add one first.");
+    const firstAsk = opts.message?.trim() ? floorContext(opts.floorId) + opts.message.trim() : undefined;
+    internStarting = Date.now();
+    try {
+      const { threadId } = await t3.startThread({
+        projectId: home.id,
+        message: internBrief(firstAsk),
+        title: "Intern",
+        model: opts.model,
+        provider: opts.provider,
+      });
+      store.data.intern = threadId;
+      store.save();
+      return threadId;
+    } finally {
+      internStarting = 0;
+      void poll();
+    }
+  }
+
+  async function hire(projectId: string, opts: { message: string; title?: string; model?: string; provider?: string; desk?: number; by?: string }) {
+    const by = opts.by ?? "api";
     const desk = typeof opts.desk === "number" && opts.desk >= 0 && opts.desk < DESK_COUNT ? opts.desk : undefined;
     if (desk !== undefined) {
       deskReservations.set(projectId, [...(deskReservations.get(projectId) ?? []), desk]);
@@ -709,7 +879,7 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
     try {
       const { threadId } = await t3.startThread({
         projectId,
-        message: opts.message,
+        message: manager.hireMessage(projectId, opts.message, by),
         title: opts.title,
         model: opts.model,
         provider: opts.provider,
@@ -721,6 +891,7 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
         store.data.desks[threadId] = { projectId, desk };
         store.save();
       }
+      manager.onHired(projectId, threadId, opts.title || opts.message.trim().split("\n")[0].slice(0, 80), by);
       return threadId;
     } finally {
       if (desk !== undefined) {
@@ -736,30 +907,37 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
   async function route(method: string, path: string, query: URLSearchParams, body: Json): Promise<Json> {
     const parts = path.split("/").filter(Boolean).map(decodeURIComponent); // ["api", ...]
     const [, a, b, c] = parts;
+    const managed = await manager.route(method, parts, query, body);
+    if (managed !== undefined) return managed;
 
     if (method === "GET" && a === "state") return snapshot;
+    if (method === "GET" && a === "projects") return snapshot.projects;
     if (method === "GET" && a === "agents") {
       const pid = query.get("projectId");
       return snapshot.agents
         .filter((x) => !pid || x.projectId === pid)
-        .map(({ id, title, activity, status, projectId, desk, isPm }) => ({ id, title, activity, status, projectId, desk, isPm }));
+        .map(({ id, title, activity, status, projectId, desk, isPm, isManager, isIntern }) => ({ id, title, activity, status, projectId, desk, isPm, isManager, isIntern }));
     }
     if (method === "GET" && a === "threads" && b && !c) return getDetail(b);
 
     if (method === "POST" && a === "hire") {
       if (!body.projectId || !body.message) throw httpError(400, "projectId and message are required");
-      const threadId = await hire(body.projectId, body);
-      return { threadId };
+      const threadId = await hire(body.projectId, { ...body, by: typeof body.by === "string" ? body.by.slice(0, 40) : undefined });
+      return { threadId, name: bloopName(threadId) };
     }
 
     if (method === "POST" && a === "threads" && b) {
       switch (c) {
         case "send":
           if (!body.text?.trim()) throw httpError(400, "text is required");
-          await t3.sendMessage(b, body.text);
+          // The intern follows the boss, so tell them which floor the boss is on.
+          await t3.sendMessage(b, (b === store.data.intern ? floorContext(body.floorId) : "") + body.text);
           break;
         case "archive":
           await t3.archive(b);
+          break;
+        case "layoff":
+          await layOff(b, { by: typeof body.by === "string" ? body.by : undefined, reason: typeof body.reason === "string" ? body.reason.slice(0, 300) : null });
           break;
         case "stop":
           await t3.stop(b);
@@ -800,6 +978,16 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
       await t3.addProject(body.path);
       void poll();
       return { ok: true };
+    }
+
+    if (method === "POST" && a === "intern" && !b) {
+      const threadId = await recruitIntern({
+        message: typeof body.message === "string" ? body.message : undefined,
+        model: body.model || undefined,
+        provider: body.provider || undefined,
+        floorId: typeof body.floorId === "string" ? body.floorId : undefined,
+      });
+      return { threadId };
     }
 
     if (method === "POST" && a === "pm") {
@@ -878,6 +1066,7 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
             message: ticketMessage(issue),
             title: issue.title,
             desk: typeof body.desk === "number" ? body.desk : undefined,
+            by: "issue board",
           });
           const { issue: updated, warning } = await startWork(issue, threadId);
           return { issue: updated, threadId, warning };
@@ -940,6 +1129,7 @@ Prefer assigning to idle agents whose title fits the work; hire a new agent when
       if (pollTimer) clearTimeout(pollTimer);
       clearInterval(gitlabTimer);
       for (const res of clients) res.end();
+      store.flush();
     },
   };
 }

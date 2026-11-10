@@ -1,9 +1,9 @@
 import "./style.css";
 import * as THREE from "three";
-import { PM_DESK, type ActivityItem, type AgentInfo, type OfficeSnapshot, type ProjectInfo } from "../shared/types.ts";
-import { api } from "./api.ts";
+import { MANAGER_DESK, PM_DESK, type ActivityItem, type AgentInfo, type OfficeSnapshot, type ProjectInfo } from "../shared/types.ts";
+import { api, setCurrentFloor } from "./api.ts";
 import { Bloop, ACTIVITY_COLORS, bloopColor, bloopName } from "./world/bloop.ts";
-import { BOARD, DESKS, ELEVATOR, HANGOUTS, MEETING, MEETING_SEATS, PLAYER_START, PLAYER_START_YAW, PM_SLOT, type Seat } from "./world/layout.ts";
+import { BOARD, DESKS, ELEVATOR, HANGOUTS, MEETING, MEETING_SEATS, PLAYER_START, PLAYER_START_YAW, MANAGER_SLOT, PM_SLOT, STAFF, type Seat } from "./world/layout.ts";
 import { NavGrid } from "./world/nav.ts";
 import { OFFICE_ASSETS, THEMES, accentMaterial, buildOffice, type Office } from "./world/office.ts";
 import { AssetLibrary } from "./world/assets.ts";
@@ -11,13 +11,15 @@ import { buildCity } from "./world/city.ts";
 import { DayNight } from "./world/daynight.ts";
 import { FLOOR_TO_FLOOR } from "./world/floorplan.ts";
 import { Player, isTyping } from "./world/player.ts";
-import { drawBoard, drawEmptyMonitor, drawMonitor, drawSign } from "./world/screens.ts";
+import { drawBoard, drawEmptyMonitor, drawMonitor, drawNameplate, drawRoster, drawSign } from "./world/screens.ts";
 import { hashString } from "./world/toon.ts";
 import { closeModal, h, modalOpen, onModalClosed, openModal, timeAgo, toast } from "./ui/dom.ts";
 import { AgentPanel } from "./ui/panel.ts";
 import { IssueBoardModal } from "./ui/board.ts";
+import { StaffModal } from "./ui/staff.ts";
 import { defaultBoardSettings } from "../shared/board.ts";
 import { OfficeChat } from "./ui/chat.ts";
+import { InternFollower } from "./world/intern.ts";
 
 // ------------------------------------------------------------------ setup
 
@@ -85,6 +87,10 @@ const player = new Player(canvas);
 scene.add(player.bloop.root);
 player.teleport(PLAYER_START, PLAYER_START_YAW);
 player.inputEnabled = () => !modalOpen();
+// The boss's intern follows you around, floor to floor (src/world/intern.ts).
+const intern = new InternFollower({ scene, nav, player, elevator: ELEVATOR });
+/** Set when you've just recruited an intern, so they arrive from the elevator. */
+let internRecruiting = 0;
 player.onLockError = () => {
   // Chrome refuses a re-capture for about a second after Esc; the click-to-play overlay covers that.
 };
@@ -101,7 +107,7 @@ resize();
 
 // ------------------------------------------------------------------ state
 
-let snapshot: OfficeSnapshot = { connected: false, error: null, projects: [], agents: [], issues: [], pm: {}, boards: {}, bridgeUrl: "" };
+let snapshot: OfficeSnapshot = { connected: false, error: null, projects: [], agents: [], issues: [], pm: {}, managers: {}, staffLog: [], boards: {}, bridgeUrl: "" };
 let firstSnapshot = true;
 let floorId: string | null = null;
 const bloops = new Map<string, Bloop>(); // agents on the current floor
@@ -114,6 +120,7 @@ const prevActivity = new Map<string, string>();
 const breakTimers = new Map<string, number>();
 const bubbles = new Map<string, HTMLElement>();
 let pmHirePending = 0;
+let managerHirePending = 0;
 let muted = localStorage.getItem("office.muted") === "1";
 
 interface Meeting {
@@ -127,7 +134,13 @@ interface Meeting {
 let meeting: Meeting | null = null;
 
 const agentById = (id: string) => snapshot.agents.find((a) => a.id === id);
-const nameOf = (id: string) => (snapshot.pm && Object.values(snapshot.pm).includes(id) ? `PM ${bloopName(id)}` : bloopName(id));
+const nameOf = (id: string) =>
+  snapshot.managers && Object.values(snapshot.managers).includes(id)
+    ? `Manager ${bloopName(id)}`
+    : snapshot.pm && Object.values(snapshot.pm).includes(id) ? `PM ${bloopName(id)}` : agentById(id)?.isIntern ? `Intern ${bloopName(id)}` : bloopName(id);
+const internAgent = () => snapshot.agents.find((a) => a.isIntern && !layingOff.has(a.id));
+/** Everyone you can see and talk to on this floor: the desk agents, plus your intern. */
+const talkable = () => (intern.bloop ? [...bloops.values(), intern.bloop] : [...bloops.values()]);
 const colorOf = (id: string) => `#${bloopColor(id).getHexString()}`;
 
 function sortedFloors(): ProjectInfo[] {
@@ -142,7 +155,9 @@ const floorNumber = (id: string) => 12 + sortedFloors().findIndex((p) => p.id ==
 const floorElevation = (id: string) => floorNumber(id) * FLOOR_TO_FLOOR;
 const floorTitle = (id: string) => snapshot.projects.find((p) => p.id === id)?.title ?? "?";
 const themeFor = (id: string) => THEMES[hashString(id) % THEMES.length];
-const seatFor = (desk: number): Seat => (desk === PM_DESK ? PM_SLOT : DESKS[desk]);
+const seatFor = (desk: number): Seat => (desk === PM_DESK ? PM_SLOT : desk === MANAGER_DESK ? MANAGER_SLOT : DESKS[desk]);
+const deskLabel = (a: AgentInfo) =>
+  a.desk === null ? "no desk" : a.desk === PM_DESK ? "PM desk" : a.desk === MANAGER_DESK ? "corner office" : `desk ${a.desk + 1}`;
 
 /**
  * Measure each seat's cushion height from the furniture actually placed there, and find
@@ -150,7 +165,7 @@ const seatFor = (desk: number): Seat => (desk === PM_DESK ? PM_SLOT : DESKS[desk
  */
 function prepareSeats() {
   office.root.updateMatrixWorld(true);
-  const seats: Seat[] = [...DESKS, PM_SLOT, ...MEETING_SEATS, ...HANGOUTS.filter((s) => !s.stand)];
+  const seats: Seat[] = [...DESKS, PM_SLOT, MANAGER_SLOT, ...MEETING_SEATS, ...HANGOUTS.filter((s) => !s.stand)];
   const ray = new THREE.Raycaster();
   ray.camera = camera; // the office has sprites, which need a camera to raycast
   const down = new THREE.Vector3(0, -1, 0);
@@ -218,6 +233,19 @@ const board = new IssueBoardModal({
   talkTo: (id) => approachAgent(id),
 });
 
+// The roster of everyone on the floor, and the floor manager (R, or the board in the corner office).
+const staff = new StaffModal({
+  snapshot: () => snapshot,
+  projectId: () => floorId ?? "",
+  nameOf,
+  colorOf,
+  deskLabel,
+  talkTo: (id) => approachAgent(id),
+  layOff,
+  hireManager,
+  managerHirePending: () => managerHirePending > 0,
+});
+
 // ------------------------------------------------------------------ sound
 
 let audio: AudioContext | null = null;
@@ -258,6 +286,7 @@ function goToFloor(id: string, opts: { instant?: boolean; then?: () => void } = 
     if (meeting) endMeeting(false);
     panel.close();
     floorId = id;
+    setCurrentFloor(id);
     localStorage.setItem("office.floor", id);
     const theme = themeFor(id);
     office.setTheme(theme);
@@ -265,7 +294,9 @@ function goToFloor(id: string, opts: { instant?: boolean; then?: () => void } = 
     city.setElevation(floorElevation(id));
     office.sign.texture.needsUpdate = true;
     player.teleport(PLAYER_START, PLAYER_START_YAW);
+    intern.arriveWithBoss();
     lastBoardKey = "";
+    lastStaffKey = "";
     syncFloor(true);
     renderHud();
     opts.then?.();
@@ -287,7 +318,7 @@ function openElevator() {
       .slice()
       .reverse()
       .map((p) => {
-        const agents = snapshot.agents.filter((a) => a.projectId === p.id);
+        const agents = snapshot.agents.filter((a) => a.projectId === p.id && !a.isIntern);
         const working = agents.filter((a) => a.activity === "working").length;
         const attention = agents.filter((a) => a.activity === "needs-input" || a.activity === "error").length;
         const done = agents.filter((a) => a.activity === "done").length;
@@ -339,7 +370,8 @@ function openElevator() {
 // ------------------------------------------------------------------ agents on the floor
 
 function spawnBloop(agent: AgentInfo, arriving: boolean) {
-  const b = new Bloop({ id: agent.id });
+  // The floor manager is a touch bigger and wears a top hat.
+  const b = agent.isManager ? new Bloop({ id: agent.id, hat: "tophat", scale: 1.1 }) : new Bloop({ id: agent.id });
   if (agent.isPm) b.root.scale.setScalar(1.05);
   // Plop! The desk chair bounces when its agent lands in it.
   b.onLanded = (seat) => {
@@ -394,13 +426,14 @@ function departBloop(b: Bloop, withBox: boolean) {
   } else go();
 }
 
-function layOff(id: string) {
+function layOff(id: string, reason?: string) {
   const b = bloops.get(id);
   layingOff.add(id);
   if (b) departBloop(b, true);
+  if (intern.id === id) intern.depart();
   if (meeting?.ids.includes(id)) meeting.ids = meeting.ids.filter((x) => x !== id);
   api
-    .archive(id)
+    .layOff(id, reason)
     .then(() => toast(`${nameOf(id)} packed up their desk and left. 📦`, "info"))
     .catch((e) => {
       layingOff.delete(id);
@@ -415,7 +448,7 @@ function syncFloor(initial = false) {
   const ids = new Set(onFloor.map((a) => a.id));
   for (const [id, b] of [...bloops]) {
     if (!ids.has(id)) {
-      // Gone entirely means archived/laid off elsewhere: pack a box on the way out.
+      // Gone entirely means archived or laid off elsewhere: pack a box on the way out.
       departBloop(b, !present.has(id));
     }
   }
@@ -456,7 +489,29 @@ function updateMonitors() {
   if (pm) drawMonitor(office.pmMonitor, pm, details.get(pm.id)?.items ?? null);
   else drawEmptyMonitor(office.pmMonitor, pmHirePending ? "recruiting…" : "board manager wanted");
   office.pmMarker.visible = !pm && !pmHirePending;
+  const mgr = seated.get(MANAGER_DESK);
+  if (mgr) drawMonitor(office.managerMonitor, mgr, details.get(mgr.id)?.items ?? null);
+  else drawEmptyMonitor(office.managerMonitor, managerHirePending ? "recruiting…" : "floor manager wanted");
+  office.managerMarker.visible = !mgr && !managerHirePending;
   drawBoardIfChanged();
+  drawStaffIfChanged();
+}
+
+let lastStaffKey = "";
+/** The roster on the manager's office wall, and the nameplate over their door. */
+function drawStaffIfChanged() {
+  if (!floorId) return;
+  const agents = snapshot.agents.filter((a) => a.projectId === floorId && !a.isIntern && !layingOff.has(a.id));
+  const mgrId = snapshot.managers?.[floorId] ?? null;
+  const log = (snapshot.staffLog ?? []).filter((e) => e.projectId === floorId);
+  const minute = Math.floor(Date.now() / 60_000); // keeps "5m ago" current
+  const key = JSON.stringify([agents.map((a) => [a.id, a.activity, a.title, a.desk]), mgrId, log.slice(-2).map((e) => e.id), minute]);
+  if (key === lastStaffKey) return;
+  lastStaffKey = key;
+  drawRoster(office.staffBoard.ctx, agents, { nameOf, colorOf, managerName: mgrId ? nameOf(mgrId) : null, log, deskLabel });
+  office.staffBoard.texture.needsUpdate = true;
+  drawNameplate(office.managerSign.ctx, mgrId ? bloopName(mgrId) : null);
+  office.managerSign.texture.needsUpdate = true;
 }
 
 let lastBoardKey = "";
@@ -520,7 +575,7 @@ function onSnapshot(s: OfficeSnapshot) {
     for (const a of s.agents) {
       const before = prevActivity.get(a.id);
       if (before && before !== a.activity) {
-        const where = a.projectId === floorId ? "" : ` (${floorNumber(a.projectId)}F ${floorTitle(a.projectId)})`;
+        const where = a.projectId === floorId || a.isIntern ? "" : ` (${floorNumber(a.projectId)}F ${floorTitle(a.projectId)})`;
         if (a.activity === "needs-input") {
           toast(`🙋 ${nameOf(a.id)} needs your input${where}`, "warn", () => approachAgent(a.id));
           chime("attention");
@@ -536,6 +591,7 @@ function onSnapshot(s: OfficeSnapshot) {
   }
   for (const a of s.agents) prevActivity.set(a.id, a.activity);
   if (floorId && s.pm[floorId] && !prev.pm[floorId]) pmHirePending = 0;
+  if (floorId && s.managers?.[floorId] && !prev.managers?.[floorId]) managerHirePending = 0;
 
   if (!floorId && s.projects.length) {
     const saved = localStorage.getItem("office.floor");
@@ -546,10 +602,15 @@ function onSnapshot(s: OfficeSnapshot) {
   } else {
     syncFloor();
   }
+  const ia = internAgent();
+  intern.sync(ia?.id ?? null, ia?.activity, internRecruiting > 0);
+  if (ia) internRecruiting = 0;
+  renderInternButton();
   firstSnapshot = false;
   panel.sync();
   chat.sync();
   board.refresh();
+  staff.refresh();
   renderHud();
 }
 
@@ -579,7 +640,7 @@ function renderHud() {
         h("span", { class: "dot", style: `background:${ACTIVITY_COLORS[a.activity]}` }),
         h("span", { class: "att-name" }, nameOf(a.id)),
         h("span", { class: "att-what" }, a.activity === "needs-input" ? "needs input" : a.activity === "done" ? "done" : "error"),
-        a.projectId !== floorId ? h("span", { class: "att-floor" }, `${floorNumber(a.projectId)}F`) : null,
+        a.projectId !== floorId && !a.isIntern ? h("span", { class: "att-floor" }, `${floorNumber(a.projectId)}F`) : null,
       ),
     ),
   );
@@ -609,7 +670,7 @@ interface Interactable {
 
 function interactables(): Interactable[] {
   const list: Interactable[] = [];
-  for (const b of bloops.values()) {
+  for (const b of talkable()) {
     if (b.errand === "leaving") continue;
     list.push({ pos: b.position, radius: 1.7, label: `Talk to ${nameOf(b.id)}`, run: () => openAgent(b.id), weight: 0.75, bloopId: b.id });
   }
@@ -622,8 +683,12 @@ function interactables(): Interactable[] {
     if (!occupied.has(PM_DESK) && !pmHirePending) {
       list.push({ pos: PM_SLOT.pos, radius: 1.4, label: "Hire a board manager", run: hirePm });
     }
+    if (!occupied.has(MANAGER_DESK) && !managerHirePending) {
+      list.push({ pos: MANAGER_SLOT.pos, radius: 1.4, label: "Hire a floor manager", run: () => void hireManager() });
+    }
   }
   list.push({ pos: BOARD.front, radius: 2.6, label: "Open the issue board", run: () => board.open() });
+  list.push({ pos: STAFF.front, radius: 2.4, label: "Open the staff roster", run: () => staff.open() });
   list.push({
     pos: MEETING.table,
     radius: 3.6,
@@ -650,7 +715,7 @@ function updatePrompt() {
   if (firstPerson) {
     raycaster.set(player.eye(), look);
     raycaster.far = 6;
-    const hit = raycaster.intersectObjects([...bloops.values()].map((b) => b.root), true)[0];
+    const hit = raycaster.intersectObjects(talkable().map((b) => b.root), true)[0];
     raycaster.far = Infinity;
     const b = hit?.object.userData.bloop as Bloop | undefined;
     if (b && b.errand !== "leaving") {
@@ -699,12 +764,16 @@ window.addEventListener("keydown", (e) => {
     openElevator();
   } else if (e.code === "KeyB") {
     board.open();
+  } else if (e.code === "KeyR") {
+    staff.open();
   } else if (e.code === "KeyM") {
     toggleMute();
   } else if (e.code === "KeyV") {
     player.toggleView();
   } else if (e.code === "KeyT") {
     chat.toggle();
+  } else if (e.code === "KeyI") {
+    callIntern();
   } else if ((e.code === "Enter" || e.code === "NumpadEnter") && !(document.activeElement as HTMLElement | null)?.closest("button, a")) {
     e.preventDefault();
     chat.focusComposer();
@@ -715,7 +784,7 @@ window.addEventListener("keydown", (e) => {
 
 function openAgent(id: string) {
   panel.open(id);
-  const b = bloops.get(id);
+  const b = bloops.get(id) ?? (intern.id === id ? intern.bloop : null);
   // Seated agents swivel round on their own (see the frame loop); standing ones just turn.
   if (b && b.mode !== "sit") b.targetYaw = Math.atan2(player.position.x - b.position.x, player.position.z - b.position.z);
 }
@@ -725,6 +794,12 @@ function approachAgent(id: string) {
   const agent = agentById(id);
   if (!agent) return;
   closeModal();
+  if (agent.isIntern) {
+    // They're already right behind you.
+    player.cancelAuto();
+    openAgent(id);
+    return;
+  }
   const walk = () => {
     const b = bloops.get(id);
     if (!b) {
@@ -789,6 +864,90 @@ async function hirePm() {
     updateMonitors();
     toast(`Couldn't hire a PM: ${(e as Error).message}`, "bad");
   }
+}
+
+async function hireManager() {
+  if (!floorId) return;
+  managerHirePending = Date.now();
+  updateMonitors();
+  staff.refresh();
+  toast("Hiring a floor manager… they'll head up to the corner office. 🎩", "info");
+  try {
+    await api.ensureManager(floorId);
+  } catch (e) {
+    managerHirePending = 0;
+    updateMonitors();
+    staff.refresh();
+    toast(`Couldn't hire a manager: ${(e as Error).message}`, "bad");
+  }
+}
+
+// ------------------------------------------------------------------ the intern
+
+const internBtn = h("button", { class: "icon-btn intern-btn", title: "Your intern (I)", onclick: () => callIntern() }, "🌱");
+document.querySelector("#hud-tl .hud-btns")?.prepend(internBtn);
+
+function renderInternButton() {
+  const a = internAgent();
+  internBtn.title = a ? `Talk to ${nameOf(a.id)}, your intern (I)` : internRecruiting ? "Your intern is on the way…" : "Recruit an intern (I)";
+  internBtn.classList.toggle("has-intern", !!a);
+  internBtn.style.setProperty("--dot", a ? ACTIVITY_COLORS[a.activity] : "transparent");
+}
+
+/** I: talk to your intern (they come round in front of you), or recruit one. */
+function callIntern() {
+  const a = internAgent();
+  if (a) {
+    if (panel.agentId === a.id) panel.close();
+    else openAgent(a.id);
+  } else if (internRecruiting) {
+    toast("Your intern is on the way up. Hang tight!", "info");
+  } else {
+    openRecruitIntern();
+  }
+}
+
+function openRecruitIntern() {
+  const models = new Map<string, string>();
+  for (const a of snapshot.agents) if (a.model && a.provider) models.set(`${a.provider}|${a.model}`, `${a.model} (${a.provider})`);
+  const ask = h("textarea", {
+    rows: 3,
+    placeholder: "First thing to ask them (optional). E.g. \"How does the issue board sync with GitLab here?\"",
+    onkeydown: (e: KeyboardEvent) => e.stopPropagation(),
+  });
+  const model = h("select", {}, h("option", { value: "" }, "Default model"), [...models].map(([v, l]) => h("option", { value: v }, l)));
+  const submit = h("button", { class: "btn primary", type: "submit" }, "🌱 Recruit intern");
+  const form = h(
+    "form",
+    {
+      class: "form",
+      onsubmit: async (e: SubmitEvent) => {
+        e.preventDefault();
+        submit.disabled = true;
+        const [provider, modelSlug] = model.value ? model.value.split("|") : [undefined, undefined];
+        internRecruiting = Date.now();
+        renderInternButton();
+        closeModal();
+        toast("Recruiting an intern… they'll be up from the elevator shortly.", "info");
+        try {
+          await api.recruitIntern({ message: ask.value.trim() || undefined, provider, model: modelSlug });
+        } catch (err) {
+          internRecruiting = 0;
+          renderInternButton();
+          toast(`Couldn't recruit an intern: ${(err as Error).message}`, "bad");
+        }
+      },
+    },
+    h(
+      "p",
+      { class: "muted" },
+      "An intern has no desk and no project. They follow you from floor to floor, so you can ask how something works on whatever floor you're on, ask general questions, or send them on errands. Press I any time to talk to them.",
+    ),
+    h("label", {}, "First question", ask),
+    h("label", {}, "Model", model),
+    h("div", { class: "row end" }, submit),
+  );
+  openModal("Recruit an intern", form);
 }
 
 // ------------------------------------------------------------------ meetings
@@ -959,7 +1118,7 @@ canvas.addEventListener("click", (e) => {
   }
   const ndc = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  const roots = [...bloops.values()].map((b) => b.root);
+  const roots = talkable().map((b) => b.root);
   const hit = raycaster.intersectObjects(roots, true)[0];
   if (hit) {
     const b = hit.object.userData.bloop as Bloop | undefined;
@@ -995,7 +1154,7 @@ function updateBubbles() {
   const w = window.innerWidth;
   const hgt = window.innerHeight;
   const seen = new Set<string>();
-  for (const b of bloops.values()) {
+  for (const b of talkable()) {
     const agent = agentById(b.id);
     if (!agent) continue;
     const near = b.position.distanceTo(player.position) < 4.5;
@@ -1118,6 +1277,8 @@ function frame() {
     }
     office.chairs.update(dt, held);
   }
+  intern.summoned = !!intern.id && panel.agentId === intern.id;
+  intern.update(dt, time);
   for (const b of leaving) {
     b.update(dt, time);
     if (b.removeWhenArrived) {
@@ -1136,6 +1297,7 @@ function frame() {
     m.scale.setScalar(near ? 0.42 : 0.0001);
   }
   if (office.pmMarker.visible) office.pmMarker.position.y = 1.15 + hover;
+  if (office.managerMarker.visible) office.managerMarker.position.y = 1.15 + hover;
   // Typing in Office Chat keeps the mouse captured so you can glance around mid-message.
   const uiBusy = modalOpen() || panel.isOpen || (isTyping() && !chat.typing);
   if (uiBusy && player.isLocked) player.unlock();
@@ -1158,6 +1320,11 @@ function frame() {
     // Expire hires that never showed up.
     for (const [desk, at] of pendingHires) if (Date.now() - at > 90_000) pendingHires.delete(desk);
     if (pmHirePending && Date.now() - pmHirePending > 90_000) pmHirePending = 0;
+    if (managerHirePending && Date.now() - managerHirePending > 90_000) managerHirePending = 0;
+    if (internRecruiting && Date.now() - internRecruiting > 90_000) {
+      internRecruiting = 0;
+      renderInternButton();
+    }
   }
   renderer.render(scene, camera);
 }
@@ -1172,6 +1339,7 @@ frame();
   openAgent,
   board,
   chat,
+  intern,
   snapshot: () => snapshot,
   bloops,
   nav,
@@ -1181,6 +1349,7 @@ frame();
     return d === undefined ? undefined : seatFor(d);
   },
   seatPath,
-  seats: { pm: PM_SLOT, meeting: MEETING_SEATS, hangouts: HANGOUTS },
+  seats: { pm: PM_SLOT, manager: MANAGER_SLOT, meeting: MEETING_SEATS, hangouts: HANGOUTS },
+  staff,
   chairs: office.chairs,
 };

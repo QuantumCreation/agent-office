@@ -1,6 +1,7 @@
-// 2D canvas drawing for in-world displays: desk monitors, the issue board and the floor sign.
+// 2D canvas drawing for in-world displays: desk monitors, the issue board, the staff board
+// in the manager's office, and the signs.
 
-import type { ActivityItem, AgentInfo, BoardSettings, Issue } from "../../shared/types.ts";
+import type { ActivityItem, AgentInfo, BoardSettings, Issue, StaffLogEntry } from "../../shared/types.ts";
 import { inkOn, tagColor, viewColumns, visibleTags, WALL_MAX_COLUMNS } from "../../shared/board.ts";
 import { ACTIVITY_COLORS } from "./bloop.ts";
 import type { Monitor } from "./office.ts";
@@ -232,6 +233,167 @@ export function drawSign(ctx: CanvasRenderingContext2D, floorNumber: number, tit
   ctx.font = "bold 40px ui-rounded, system-ui, sans-serif";
   const t = title.length > 16 ? title.slice(0, 15) + "…" : title;
   ctx.fillText(t, 130, 80);
+}
+
+const ROSTER_ORDER: Record<string, number> = { "needs-input": 0, error: 1, working: 2, done: 3, idle: 4 };
+
+function ago(iso: string) {
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60_000));
+  return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+}
+
+/** The staff board: everyone on the floor as cards, with the latest hires and firings along the bottom. */
+export function drawRoster(
+  ctx: CanvasRenderingContext2D,
+  agents: AgentInfo[],
+  opts: { nameOf: (id: string) => string; colorOf: (id: string) => string; managerName: string | null; log: StaffLogEntry[]; deskLabel: (a: AgentInfo) => string },
+) {
+  const { width: w, height: h } = ctx.canvas;
+  ctx.fillStyle = "#fbf8f2";
+  ctx.fillRect(0, 0, w, h);
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#3a3c4e";
+  ctx.font = "bold 26px ui-rounded, system-ui, sans-serif";
+  ctx.fillText("THE TEAM", 18, 36);
+  ctx.textAlign = "right";
+  ctx.font = "16px ui-rounded, system-ui, sans-serif";
+  ctx.fillStyle = "#6a6e85";
+  ctx.fillText(opts.managerName ? `managed by ${opts.managerName}` : "no floor manager yet · press E at the desk", w - 18, 34);
+  ctx.textAlign = "left";
+
+  // Head count by activity
+  const counts = new Map<string, number>();
+  for (const a of agents) counts.set(a.activity, (counts.get(a.activity) ?? 0) + 1);
+  let x = 18;
+  ctx.font = "bold 15px ui-rounded, system-ui, sans-serif";
+  const head = `${agents.length} on the floor`;
+  ctx.fillStyle = "#3a3c4e";
+  ctx.fillText(head, x, 64);
+  x += ctx.measureText(head).width + 16;
+  for (const act of ["working", "needs-input", "error", "done", "idle"]) {
+    const n = counts.get(act);
+    if (!n) continue;
+    const label = `${n} ${ACTIVITY_LABEL[act]}`;
+    ctx.fillStyle = ACTIVITY_COLORS[act as AgentInfo["activity"]];
+    ctx.beginPath();
+    ctx.arc(x + 6, 59, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#4a4d60";
+    ctx.font = "15px ui-rounded, system-ui, sans-serif";
+    ctx.fillText(label, x + 16, 64);
+    x += ctx.measureText(label).width + 34;
+  }
+
+  // Cards
+  const sorted = [...agents].sort(
+    (a, b) =>
+      Number(b.isManager) - Number(a.isManager) ||
+      Number(b.isPm) - Number(a.isPm) ||
+      ROSTER_ORDER[a.activity] - ROSTER_ORDER[b.activity] ||
+      Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+  );
+  const logH = opts.log.length ? 74 : 0;
+  const cols = 3;
+  const gap = 10;
+  const cardW = (w - 36 - gap * (cols - 1)) / cols;
+  const cardH = 58;
+  const top = 80;
+  const rows = Math.max(1, Math.floor((h - top - logH - 14 + gap) / (cardH + gap)));
+  const slots = rows * cols;
+  const shown = sorted.length > slots ? sorted.slice(0, slots - 1) : sorted;
+  shown.forEach((a, i) => {
+    const cx = 18 + (i % cols) * (cardW + gap);
+    const cy = top + Math.floor(i / cols) * (cardH + gap);
+    ctx.fillStyle = a.isManager ? "#f3e9d8" : "#ffffff";
+    roundRect(ctx, cx, cy, cardW, cardH, 10);
+    ctx.fill();
+    ctx.strokeStyle = "#e2dccf";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // avatar
+    ctx.fillStyle = opts.colorOf(a.id);
+    ctx.beginPath();
+    ctx.arc(cx + 28, cy + cardH / 2, 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = ACTIVITY_COLORS[a.activity];
+    ctx.beginPath();
+    ctx.arc(cx + 42, cy + cardH / 2 + 13, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    const name = opts.nameOf(a.id);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 17px ui-rounded, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(name.replace(/^(PM|Manager) /, "")[0] ?? "?", cx + 28, cy + cardH / 2 + 6);
+    ctx.textAlign = "left";
+    // name, desk, title
+    const textW = cardW - 64 - 10;
+    ctx.fillStyle = "#2f3142";
+    ctx.font = "bold 15px ui-rounded, system-ui, sans-serif";
+    ctx.fillText(wrap(ctx, name, textW - 70, 1)[0] ?? "", cx + 58, cy + 23);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#8a8ea3";
+    ctx.font = "12px ui-rounded, system-ui, sans-serif";
+    ctx.fillText(opts.deskLabel(a), cx + cardW - 10, cy + 22);
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#5a5e73";
+    ctx.font = "13px ui-rounded, system-ui, sans-serif";
+    ctx.fillText(wrap(ctx, a.title, textW, 1)[0] ?? "", cx + 58, cy + 43);
+  });
+  if (sorted.length > shown.length) {
+    const i = shown.length;
+    const cx = 18 + (i % cols) * (cardW + gap);
+    const cy = top + Math.floor(i / cols) * (cardH + gap);
+    ctx.fillStyle = "#6a6e85";
+    ctx.font = "bold 16px ui-rounded, system-ui, sans-serif";
+    ctx.fillText(`+${sorted.length - shown.length} more`, cx + 16, cy + cardH / 2 + 6);
+  }
+  if (!agents.length) {
+    ctx.fillStyle = "#8a8ea3";
+    ctx.font = "18px ui-rounded, system-ui, sans-serif";
+    ctx.fillText("Nobody here yet. Hire someone at an empty desk, or ask the manager to staff up.", 18, top + 30);
+  }
+
+  // Recent hires and firings
+  if (logH) {
+    const y0 = h - logH;
+    ctx.fillStyle = "#efe8da";
+    ctx.fillRect(0, y0, w, logH);
+    ctx.fillStyle = "#6a5a40";
+    ctx.font = "bold 13px ui-rounded, system-ui, sans-serif";
+    ctx.fillText("RECENT STAFF CHANGES", 18, y0 + 20);
+    ctx.font = "14px ui-rounded, system-ui, sans-serif";
+    opts.log.slice(-2).reverse().forEach((e, i) => {
+      const verb = e.action === "hire" ? "＋ hired" : "📦 let go";
+      const who = e.by === "boss" ? "by you" : `by the ${e.by}`;
+      const line = `${verb} ${e.name} · ${e.title}${e.reason ? ` · "${e.reason}"` : ""} · ${who} · ${ago(e.at)}`;
+      ctx.fillStyle = e.action === "hire" ? "#2e7d4f" : "#8a4b2e";
+      ctx.fillText(wrap(ctx, line, w - 36, 1)[0] ?? "", 18, y0 + 42 + i * 21);
+    });
+  }
+}
+
+/** Nameplate over the manager's door. */
+export function drawNameplate(ctx: CanvasRenderingContext2D, name: string | null) {
+  const { width: w, height: h } = ctx.canvas;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#4a3526";
+  roundRect(ctx, 4, 6, w - 8, h - 12, 18);
+  ctx.fill();
+  ctx.strokeStyle = "#d9b45a";
+  ctx.lineWidth = 4;
+  roundRect(ctx, 12, 14, w - 24, h - 28, 12);
+  ctx.stroke();
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#e9cf86";
+  ctx.font = "bold 22px ui-rounded, system-ui, sans-serif";
+  ctx.fillText("FLOOR MANAGER", w / 2, 50);
+  ctx.fillStyle = "#fff6e0";
+  ctx.font = "bold 36px ui-rounded, system-ui, sans-serif";
+  ctx.fillText(name ?? "vacant", w / 2, 94);
+  ctx.textAlign = "left";
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {

@@ -14,6 +14,7 @@
 
 import * as THREE from "three";
 import { buildCity } from "../src/world/city.ts";
+import { CEILING_HEIGHT, WINDOW_HEAD, WINDOW_SILL } from "../src/world/floorplan.ts";
 import { DayNight } from "../src/world/daynight.ts";
 
 const q = new URLSearchParams(location.search);
@@ -65,7 +66,8 @@ const office = new THREE.Group();
     office.add(b);
   };
   box(36, 0.3, 26, 0, -0.15, 0, toonMat("#bfd0e6"));
-  box(36, 0.2, 26, 0, 3.0, 0, toonMat("#f6f3ec"));
+  const H = CEILING_HEIGHT, sill = WINDOW_SILL, head = WINDOW_HEAD;
+  box(36, 0.2, 26, 0, H + 0.1, 0, toonMat("#f6f3ec"));
   const edges: [number, number, number, number][] = [
     [-18, -13, 18, -13],
     [-18, 13, 18, 13],
@@ -78,13 +80,13 @@ const office = new THREE.Group();
     const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
     const seg = (h: number, y: number, t: number, m: THREE.Material) =>
       alongX ? box(len, h, t, cx, y, cz, m) : box(t, h, len, cx, y, cz, m);
-    seg(0.45, 0.225, 0.3, wall);
-    seg(0.2, 2.8, 0.3, wall);
-    seg(2.25, 1.575, 0.02, glass);
-    seg(0.06, 0.45, 0.2, mull);
+    seg(sill, sill / 2, 0.3, wall);
+    seg(H - head, (head + H) / 2, 0.3, wall);
+    seg(head - sill, (sill + head) / 2, 0.02, glass);
+    seg(0.06, sill, 0.2, mull);
     for (let s = 0; s <= len + 1e-6; s += 1.5) {
-      if (alongX) box(0.06, 2.25, 0.14, x0 + s, 1.575, cz, mull);
-      else box(0.14, 2.25, 0.06, cx, 1.575, z0 + s, mull);
+      if (alongX) box(0.06, head - sill, 0.14, x0 + s, (sill + head) / 2, cz, mull);
+      else box(0.14, head - sill, 0.06, cx, (sill + head) / 2, z0 + s, mull);
     }
   }
   // A couple of desks and a plant for scale.

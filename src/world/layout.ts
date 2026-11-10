@@ -1,7 +1,7 @@
 // Game-facing view of the floor plan (floorplan.ts) as three.js vectors.
 
 import * as THREE from "three";
-import { DESK_COUNT } from "../../shared/types.ts";
+import { DESK_COUNT, MANAGER_DESK } from "../../shared/types.ts";
 import * as plan from "./floorplan.ts";
 
 export const ROOM = { ...plan.PLATE, wallH: plan.CEILING_HEIGHT };
@@ -32,6 +32,15 @@ const desk = (d: plan.DeskSlot): DeskSlot => ({ ...seat(d), index: d.index, desk
 export const DESKS: DeskSlot[] = plan.DESKS.map(desk).sort((a, b) => a.index - b.index);
 if (DESKS.length !== DESK_COUNT) throw new Error(`floor plan has ${DESKS.length} desks, expected ${DESK_COUNT}`);
 export const PM_SLOT: DeskSlot = desk(plan.PM_DESK);
+if (MANAGER_DESK !== plan.MANAGER_DESK.index) throw new Error("manager desk index mismatch");
+export const MANAGER_SLOT: DeskSlot = desk(plan.MANAGER_DESK);
+
+/** The manager's office: the staff board on the wall, where to stand to read it, and the door. */
+export const STAFF = {
+  center: new THREE.Vector3(plan.STAFF_BOARD.x, plan.STAFF_BOARD.centerY, plan.STAFF_BOARD.z),
+  front: v(plan.STAFF_BOARD_FRONT),
+  door: v(plan.MANAGER_DOOR),
+};
 
 export const MEETING = {
   table: new THREE.Vector3(plan.BOARDROOM_TABLE.x, 0, plan.BOARDROOM_TABLE.z),

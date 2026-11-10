@@ -1,4 +1,5 @@
-"""Hanging pothos: ceiling-hung (origin = ceiling hook), macrame hanger, white pot, trailing vines (~0.9 drop)."""
+"""Hanging pothos: ceiling-hung (origin = ceiling hook), long macrame hanger, white pot, trailing vines (~1.4 drop,
+sized for the office's 3.6 m ceiling)."""
 
 import math
 import os
@@ -21,7 +22,7 @@ leaf_b = mat("leaf_light", "#9ccf6a")
 cyl(0.035, 0.015, loc=(0, 0, -0.0075), material=potm, verts=16)
 torus(0.022, 0.005, loc=(0, 0, -0.04), material=rope, rot=(math.pi / 2, 0, 0), major_seg=14, minor_seg=6)
 
-pot_top = -0.42
+pot_top = -0.92
 pot_h = 0.17
 r_top = 0.12
 pot(r_top, pot_h, potm, soil, r_bot=0.085, rim=0.01, rim_h=0.025, segs=20, loc=(0, 0, pot_top - pot_h))
@@ -32,7 +33,7 @@ sphere(0.016, loc=(0, 0, -0.07), material=rope, segments=8, rings=5)
 for i in range(3):
     a = i * 2 * math.pi / 3 + 0.5
     c, s = math.cos(a), math.sin(a)
-    pts = [(0, 0, -0.07), (c * 0.07, s * 0.07, -0.25), (c * (r_top + 0.014), s * (r_top + 0.014), pot_top - 0.02),
+    pts = [(0, 0, -0.07), (c * 0.07, s * 0.07, pot_top + 0.17), (c * (r_top + 0.014), s * (r_top + 0.014), pot_top - 0.02),
            (c * (0.105), s * (0.105), pot_top - 0.1), (c * 0.07, s * 0.07, pot_top - pot_h - 0.01), (0, 0, pot_top - pot_h - 0.05)]
     ptube(pts, 0.005, rope, sides=4)
     sphere(0.011, loc=(c * 0.115, s * 0.115, pot_top - 0.09), material=rope, segments=8, rings=5)  # knot on the pot side

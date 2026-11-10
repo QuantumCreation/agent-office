@@ -112,11 +112,11 @@ export class AgentPanel {
     if (!agent) return;
     const name = this.host.nameOf(agent.id);
     this.header.replaceChildren(
-      h("div", { class: "avatar", style: `background:${this.host.colorOf(agent.id)}` }, name[0]),
+      h("div", { class: "avatar", style: `background:${this.host.colorOf(agent.id)}` }, name.replace(/^(PM|Intern) /, "")[0]),
       h(
         "div",
         { class: "who" },
-        h("div", { class: "name" }, name, agent.isPm ? h("span", { class: "tag" }, "Board PM") : null),
+        h("div", { class: "name" }, name, agent.isManager ? h("span", { class: "tag" }, "Floor manager") : agent.isPm ? h("span", { class: "tag" }, "Board PM") : agent.isIntern ? h("span", { class: "tag" }, "Intern") : null),
         h("div", { class: "title", title: agent.title }, agent.title),
         h(
           "div",
@@ -141,7 +141,7 @@ export class AgentPanel {
         {
           class: "btn danger",
           onclick: () => {
-            if (confirm(`Lay off ${this.host.nameOf(agent.id)}? Their thread "${agent.title}" will be archived in T3 Code.`)) {
+            if (confirm(`Lay off ${this.host.nameOf(agent.id)}? Their thread "${agent.title}" will be settled in T3 Code (not archived). Un-settle it there to bring them back.`)) {
               this.host.layOff(agent.id);
               this.close();
             }

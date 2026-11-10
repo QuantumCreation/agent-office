@@ -1,6 +1,7 @@
 """Ceiling pendants (origin = ceiling attachment point, everything hangs below in -Z).
-  pendant_lamp:        canopy, 0.75 m cable, dome shade Ø 0.45 (accent colored), `emissive_bulb`.
-  pendant_lamp_linear: 1.4 m linear pendant on two cables, for over the conference table."""
+  pendant_lamp:        canopy, 1.45 m cable, dome shade Ø 0.45 (accent colored), `emissive_bulb`.
+  pendant_lamp_linear: 1.4 m linear pendant on two 1.45 m cables, for over the conference table.
+Cables are sized for the office's 3.6 m ceiling: shades hang about 1.9 m above the floor."""
 
 import math
 import os
@@ -18,7 +19,8 @@ inner = mat("white")
 bulb = mat("emissive_bulb", "#fff4d6")
 
 cyl(0.06, 0.025, loc=(0, 0, -0.0125), material=dark, verts=20, round=0.008)
-top = -0.025 - 0.75
+CABLE = 1.45
+top = -0.025 - CABLE
 tube([(0, 0, -0.025), (0, 0, top)], 0.004, dark, sides=6)
 cyl(0.028, 0.04, loc=(0, 0, top - 0.01), material=dark, verts=14, round=0.01)
 R = 0.225
@@ -43,7 +45,7 @@ dark = mat("charcoal")
 shade = mat("accent_shade", "sage")
 bulb = mat("emissive_bulb", "#fff4d6")
 L = 1.4
-z0 = -0.75
+z0 = -CABLE
 for sx in (-1, 1):
     x = sx * 0.55
     cyl(0.045, 0.02, loc=(x, 0, -0.01), material=dark, verts=16, round=0.006)

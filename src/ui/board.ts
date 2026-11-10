@@ -74,7 +74,7 @@ export class IssueBoardModal {
     const pid = this.host.projectId();
     const board = boardOf(snap, pid);
     const issues = snap.issues.filter((i) => i.projectId === pid);
-    const agents = snap.agents.filter((a) => a.projectId === pid && !a.isPm);
+    const agents = snap.agents.filter((a) => a.projectId === pid && !a.isPm && !a.isManager && !a.isIntern);
     const pmId = snap.pm[pid];
     const pm = pmId ? snap.agents.find((a) => a.id === pmId) : undefined;
     const key = JSON.stringify([issues, agents.map((a) => [a.id, a.activity, a.title]), pm?.activity ?? null, board]);
@@ -372,7 +372,7 @@ class SettingsForm {
           g.hasToken && !this.clearToken ? h("button", { class: "btn", type: "button", onclick: () => { this.clearToken = true; this.token = ""; this.draw(); } }, "Forget") : null,
         ),
       ),
-      h("p", { class: "muted small" }, "The token stays in data/office.json on this machine and is never sent to the page. You can also set GITLAB_TOKEN when starting the office."),
+      h("p", { class: "muted small" }, "The token stays in the office's data file on this machine and is never sent to the page. You can also set GITLAB_TOKEN when starting the office."),
       this.board.gitlab.enabled
         ? h("p", { class: "muted small" },
             this.board.sync.at ? `Last synced ${timeAgo(this.board.sync.at)}, ${this.board.sync.count} issues.` : "Not synced yet.",

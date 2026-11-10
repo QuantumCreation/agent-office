@@ -1,48 +1,15 @@
-// Production server: serves the built client from dist/ plus the office bridge.
-import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+// Production server for the browser: `npm run serve` (or `npm start`, which builds first).
 import { fileURLToPath } from "node:url";
-import { createBridge } from "./bridge.ts";
+import { startOfficeServer } from "./http.ts";
+import { DEFAULT_PORT, resolveDataFile } from "./paths.ts";
 
-const PORT = Number(process.env.PORT ?? 5199);
-const root = fileURLToPath(new URL("../dist/", import.meta.url));
-const dataFile = fileURLToPath(new URL("../data/office.json", import.meta.url));
-const TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".json": "application/json",
-};
-
-const bridge = createBridge({ dataFile, publicUrl: () => `http://127.0.0.1:${PORT}` });
-
-const server = createServer((req, res) => {
-  bridge.middleware(req, res, async () => {
-    const urlPath = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
-    let file = normalize(join(root, urlPath));
-    if (!file.startsWith(root)) {
-      res.statusCode = 403;
-      return res.end();
-    }
-    try {
-      if ((await stat(file)).isDirectory()) file = join(file, "index.html");
-    } catch {
-      file = join(root, "index.html");
-    }
-    try {
-      const body = await readFile(file);
-      res.setHeader("content-type", TYPES[extname(file)] ?? "application/octet-stream");
-      res.end(body);
-    } catch {
-      res.statusCode = 404;
-      res.end("Not found. Run `npm run build` first.");
-    }
-  });
+const office = await startOfficeServer({
+  distDir: fileURLToPath(new URL("../dist/", import.meta.url)),
+  dataFile: resolveDataFile(fileURLToPath(new URL("../data/office.json", import.meta.url))),
+  port: Number(process.env.PORT ?? DEFAULT_PORT),
 });
+console.log(`Agent Office running at ${office.url}`);
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Agent Office running at http://127.0.0.1:${PORT}`);
-});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => void office.close().then(() => process.exit(0)));
+}
