@@ -646,7 +646,7 @@ export class RayTracer {
     t.pNormal.value = prev.textures[1];
     t.pDepth.value = prev.depthTexture;
     t.uPrevViewProj.value.copy(this.prevViewProj);
-    t.uMaxHistory.value = this.denoise ? 24 : 1;
+    t.uMaxHistory.value = this.denoise ? 32 : 1;
     t.uTexel.value.copy(texel);
     this.quad.material = this.temporalMat;
     renderer.setRenderTarget(hNew);

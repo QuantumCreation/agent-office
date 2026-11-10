@@ -99,13 +99,19 @@ export class Elevators {
     steel.userData.rt = { rough: 0.38, f0: 0.04 };
     const polished = toon("#9aa1ae");
     polished.userData.rt = { metal: 1, rough: 0.18, color: "#d4d9e2" };
+    // Wood laminate at the back: steel facing the steel doors is the ray tracer's noisiest case.
+    const laminate = toon("#b48f68");
+    laminate.userData.rt = { rough: 0.3, f0: 0.04 };
     const chrome = toon("#e3e6ec");
     chrome.userData.rt = { metal: 1, rough: 0.04, color: "#eef1f6" };
     const floorMat = toon("#3a3d4a");
     floorMat.userData.rt = { rough: 0.28, f0: 0.05 };
     const doorMat = toon("#b8bfcc");
     // Brushed rather than mirror: a mirror this size shows the noisy reflection of what's behind you.
-    doorMat.userData.rt = { metal: 1, rough: 0.2, color: "#d4d9e2" };
+    doorMat.userData.rt = { metal: 1, rough: 0.3, color: "#d4d9e2" };
+    // A softly glowing diffuser ceiling around the lamp (an unlit one reflects as black specks).
+    const ceilingMat = toon("#f6f1e8");
+    ceilingMat.userData.rt = { emissive: 0.9, group: 4, rough: 0.6 };
     const lightMat = new THREE.MeshBasicMaterial({ color: "#fff7e8", toneMapped: false });
     lightMat.userData.rt = { emissive: 6, group: 4, light: true };
 
@@ -122,13 +128,13 @@ export class Elevators {
       const cz = (BACK_Z + INNER_Z) / 2;
       // The car: steel walls, a polished back wall, a dark floor, handrails and a light.
       this.group.add(boxMesh(w, 0.02, d, floorMat, cx, 0.01, cz));
-      this.group.add(boxMesh(w, H, 0.03, polished, cx, H / 2, BACK_Z + 0.015));
+      this.group.add(boxMesh(w, H, 0.03, laminate, cx, H / 2, BACK_Z + 0.015));
       this.group.add(boxMesh(0.03, H, d, steel, x0 + 0.015, H / 2, cz));
       this.group.add(boxMesh(0.03, H, d, steel, x1 - 0.015, H / 2, cz));
       this.group.add(boxMesh(w - 0.2, 0.04, 0.04, chrome, cx, 0.95, BACK_Z + 0.08));
       this.group.add(boxMesh(0.04, 0.04, d - 0.5, chrome, x0 + 0.08, 0.95, cz - 0.1));
       this.group.add(boxMesh(0.04, 0.04, d - 0.5, chrome, x1 - 0.08, 0.95, cz - 0.1));
-      this.group.add(boxMesh(w, 0.03, d, steel, cx, H - 0.015, cz));
+      this.group.add(boxMesh(w, 0.03, d, ceilingMat, cx, H - 0.015, cz));
       // Steel on the inside of the door wall too: either side of the doorway and above it.
       const fz = INNER_Z - 0.012;
       const l0 = dx - DOOR_W / 2 - 0.04 - x0;

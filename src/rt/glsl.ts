@@ -467,14 +467,17 @@ vec3 shadeHit(Hit h, vec3 P, vec3 rd, bool countLights, int candidates, inout ui
   vec3 L = vec3(0.0);
   if (h.emissive > 0.0 && (countLights || h.lightFlag < 0.5)) L += h.albedo * h.emissive * uGroupScale[int(h.group)];
   vec3 diff = h.albedo * (1.0 - h.metal);
-  if (dot(diff, diff) > 1e-6) {
-    vec3 E = sampleLights(P, h.n, candidates, seed) + sampleSun(P, h.n, seed) + uAmbient;
-    L += diff * E;
-  }
+  vec3 E = vec3(0.0);
+  if (dot(diff, diff) > 1e-6 || h.metal > 0.5) E = sampleLights(P, h.n, candidates, seed) + sampleSun(P, h.n, seed) + uAmbient;
+  L += diff * E;
   if (h.metal > 0.0 || h.rough < 0.3) {
     vec3 F0 = mix(vec3(0.04), h.albedo, h.metal);
     vec3 R = reflect(rd, h.n);
-    L += envBRDFApprox(F0, h.rough, max(dot(h.n, -rd), 0.0)) * (h.metal > 0.5 ? envColor(R, h.rough) : uAmbient * 2.0);
+    // One bounce can't follow metal-to-metal paths. The outdoor environment alone is far too dark
+    // indoors (black at night), which left steel and chrome speckled: add what the metal's
+    // surroundings would reflect, from the light arriving here.
+    vec3 seen = h.metal > 0.5 ? envColor(R, h.rough) + E * 0.45 : uAmbient * 2.0;
+    L += envBRDFApprox(F0, h.rough, max(dot(h.n, -rd), 0.0)) * seen;
   }
   return L;
 }
@@ -650,7 +653,7 @@ void main() {
     Hit h;
     if (traceScene(O, R, h)) {
       vec3 Hp = O + R * h.t;
-      if (!screenReuse(Hp, h.n, spec)) spec = shadeHit(h, Hp, R, true, 8, seed);
+      if (!screenReuse(Hp, h.n, spec)) spec = shadeHit(h, Hp, R, true, 16, seed);
       hitDist = h.t;
     } else {
       spec = envColor(R, rough);
@@ -692,6 +695,29 @@ void main() {
   }
   vec4 nr = texture(gNormal, vUv);
   vec4 mat = texture(gMat, vUv);
+
+  // Firefly (and dark speck) rejection: pull this frame's samples into the range of their
+  // 8 neighbours (mean ± 2σ), so one lucky or unlucky ray can't survive the edge-aware filter.
+  vec3 m1d = vec3(0.0), m2d = vec3(0.0), m1s = vec3(0.0), m2s = vec3(0.0);
+  vec3 lo = vec3(1e9), hi = vec3(-1e9);
+  for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++) {
+      if (x == 0 && y == 0) continue;
+      vec2 o = vUv + vec2(x, y) * uTexel;
+      vec3 d = texture(tDiffuse, o).rgb;
+      vec3 s = texture(tSpec, o).rgb;
+      m1d += d; m2d += d * d;
+      m1s += s; m2s += s * s;
+      lo = min(lo, s); hi = max(hi, s);
+    }
+  m1d /= 8.0; m2d /= 8.0; m1s /= 8.0; m2s /= 8.0;
+  vec3 sdD = sqrt(max(m2d - m1d * m1d, 0.0)) * 2.0 + m1d * 0.1 + 0.004;
+  vec3 sdS = sqrt(max(m2s - m1s * m1s, 0.0)) * 2.0 + m1s * 0.1 + 0.004;
+  cd = clamp(cd, m1d - sdD, m1d + sdD);
+  cs = clamp(cs, m1s - sdS, m1s + sdS);
+  lo = min(lo, cs);
+  hi = max(hi, cs);
+
   vec3 P = worldPos(vUv, depth);
   vec4 pc = uPrevViewProj * vec4(P, 1.0);
   vec2 puv = pc.xy / pc.w * 0.5 + 0.5;
@@ -721,19 +747,12 @@ void main() {
     if (sValid) sValid = dot(texture(pNormal, suv).xyz, nr.xyz) > 0.95;
   }
   vec4 hs = sValid ? texture(hSpec, suv) : vec4(0.0);
-  float maxS = mix(10.0, uMaxHistory, smoothstep(0.1, 0.45, rough));
+  float maxS = mix(20.0, uMaxHistory, smoothstep(0.1, 0.45, rough));
   maxS = mix(maxS, 3.0, dynamicPx);
   if (uMaxHistory <= 1.0) maxS = 1.0;
   float lenS = min(hs.a + 1.0, maxS);
   vec3 hsC = hs.rgb;
   if (rough < 0.35) {
-    vec3 lo = cs, hi = cs;
-    for (int y = -1; y <= 1; y++)
-      for (int x = -1; x <= 1; x++) {
-        vec3 s = texture(tSpec, vUv + vec2(x, y) * uTexel).rgb;
-        lo = min(lo, s);
-        hi = max(hi, s);
-      }
     vec3 pad = (hi - lo) * 0.25 + 0.02;
     hsC = clamp(hsC, lo - pad, hi + pad);
   }
@@ -788,7 +807,9 @@ void main() {
       vec3 cd = textureLod(tDiffuse, uv, 0.0).rgb;
       vec3 cs = textureLod(tSpec, uv, 0.0).rgb;
       float wd = w * exp(-abs(lum(cd) - lD) / (sigL * (lD + 0.05)));
-      float ws = w * specBlur * exp(-abs(nq.w - rough) * 12.0) * exp(-abs(lum(cs) - lS) / (sigL * (lS + 0.05)));
+      // Rough reflections should look smooth, so their brightness test is looser: otherwise a
+      // mix of bright and dark one-sample rays survives as speckle.
+      float ws = w * specBlur * exp(-abs(nq.w - rough) * 12.0) * exp(-abs(lum(cs) - lS) / ((sigL + 2.0 * specBlur) * (lS + 0.05)));
       if (x == 0 && y == 0) ws = w;
       accD += cd * wd;
       wD += wd;

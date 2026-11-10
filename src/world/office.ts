@@ -240,7 +240,7 @@ export function buildOffice(lib?: AssetLibrary): Office {
   const doorMat = toon("#c99a6b");
   const metalDoorMat = toon("#b8bfcc");
   // Ray tracer finishes: brushed-steel frames, mirror-polished lift doors.
-  frameMat.userData.rt = { metal: 1, rough: 0.3, color: "#c9ced8" };
+  frameMat.userData.rt = { metal: 1, rough: 0.45, color: "#c9ced8" };
   mullionMat.userData.rt = { metal: 1, rough: 0.25, color: "#b4bac6" };
   metalDoorMat.userData.rt = { metal: 1, rough: 0.07, color: "#d4d9e2" };
   doorMat.userData.rt = { rough: 0.22 };
