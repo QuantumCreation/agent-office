@@ -41,8 +41,8 @@ shared by the app, `npm run dev` and `npm start`. Set `AGENT_OFFICE_DATA` to use
 
 ## Real-time ray tracing ⚡ (optional)
 
-Tick **⚡ Ray tracing** at the bottom left (or press **G**) to render the office with a hybrid real-time ray tracer
-(`src/rt/`). It's off by default and remembered per browser; while it's off the office looks and runs exactly as
+Flip the **⚡** switch in the top bar (or press **G**) to render the office with a hybrid real-time ray tracer
+(`src/rt/`). The **▾** next to it opens the options: lighting mood, which passes run, debug views and live stats. It's off by default and remembered per browser; while it's off the office looks and runs exactly as
 before, and nothing is built for it until you first turn it on. It wants a decent GPU.
 
 The office and the Bloops are rasterized into a G-buffer, then every pixel traces rays against a BVH of the whole office
@@ -69,12 +69,12 @@ The office and the Bloops are rasterized into a G-buffer, then every pixel trace
 
 | Key | |
 |---|---|
-| **G** | Ray tracing on/off (same as the checkbox; compare with the original toon look) |
+| **G** | Ray tracing on/off (same as the ⚡ switch; compare with the original toon look) |
 | **L** | Lighting mood: *Live* (follows the real time of day), *Neon noir*, *Lights out* |
 | **X** | Debug views: final, diffuse light, reflections, normals, roughness/metal |
 | **N** | Denoiser on/off (see the raw 1-sample rays) |
 
-`?rt=1` / `?rt=0` override the checkbox for one visit. `?demo=1` fills an office with no agents with demo Bloops whose
+`?rt=1` / `?rt=0` override the switch for one visit. `?demo=1` fills an office with no agents with demo Bloops whose
 status changes every few seconds, handy for trying it out. Runs at ~230 fps at 1280×720 and ~115 fps at 2560×1440 on
 an RTX 5090.
 
@@ -124,9 +124,12 @@ login. Settings, all optional:
 ## Controls
 
 - Click the view to grab the mouse, then **WASD** to walk (**Shift** runs). **Esc** lets go of the mouse.
-- **E** or click: use whatever is under the crosshair (talk, hire, board, meeting, elevator).
+- **E** or click: use whatever is under the crosshair (talk, hire, board, meeting, elevator buttons).
+- **Elevators**: walk up to a lift and the doors open. Step in, aim at a floor on the button panel beside the door and
+  press **E**: the doors close, the car moves (the indicator counts the floors) and they open on that floor. The lit
+  directory between the lifts lists every floor. **F** still jumps straight to any floor (`src/world/elevator.ts`).
 - **V** switches between first person and an over-the-shoulder overview.
-- **F** floors · **B** issue board · **R** staff roster · **I** intern · **M** mute.
+- **F** floors · **B** issue board · **R** staff roster · **I** intern · **M** mute · **G** ray tracing.
 - **T** opens Office Chat, a messenger with every agent on every floor. It stays open while you walk:
   **Enter** to type (Enter sends and puts you back to walking), **[** / **]** to switch chats.
 - The top-right list shows everyone who needs you on any floor. Click a name to walk over.

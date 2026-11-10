@@ -10,6 +10,7 @@ import { canvasTexture, flat, hashString, mesh, toon, toonUnique } from "./toon.
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { fitFootprint, InstancedPlacer, type AssetLibrary } from "./assets.ts";
 import { SwivelChairs } from "./chairs.ts";
+import { Elevators } from "./elevator.ts";
 
 /** Theme accent shared by procedural props and Blender assets ("accent*" materials). */
 export const accentMaterial = toonUnique("#6f9de0");
@@ -69,6 +70,8 @@ export interface Office {
   /** Everything vertical (scaled down in cutaway) and the ceiling (hidden in cutaway). */
   walls: THREE.Group;
   ceiling: THREE.Group;
+  /** The lifts: sliding doors, cars with floor buttons, the lobby directory. */
+  elevators: Elevators;
 }
 
 /** Floor finishes for the ray tracer: everything is sealed or polished, so it reflects. */
@@ -336,11 +339,10 @@ export function buildOffice(lib?: AssetLibrary): Office {
       slab(w, s1 - 0.05, s1 + 0.02, 0, DOOR_H, t + 0.04, frameMat);
       slab(w, s0 - 0.02, s1 + 0.02, DOOR_H - 0.05, DOOR_H + 0.03, t + 0.04, frameMat);
 
-      const closed = o.kind === "elevator" || o.kind === "stair-door" || w.kind === "core";
+      // Lift doors slide and have a car behind them: see elevator.ts (which also owns their colliders).
+      const closed = o.kind !== "elevator" && (o.kind === "stair-door" || w.kind === "core");
       if (o.kind === "elevator") {
-        slab(w, s0, o.at, 0, DOOR_H, t * 0.6, metalDoorMat, 0);
-        slab(w, o.at, s1, 0, DOOR_H, t * 0.6, metalDoorMat, 0);
-        slab(w, o.at - 0.005, o.at + 0.005, 0, DOOR_H, t * 0.7, mullionMat, 0);
+        // nothing here
       } else if (closed) {
         slab(w, s0 + 0.02, s1 - 0.02, 0, DOOR_H - 0.02, 0.05, o.kind === "stair-door" ? metalDoorMat : doorMat, 0);
       } else {
@@ -584,7 +586,8 @@ export function buildOffice(lib?: AssetLibrary): Office {
   }
 
   mergeStatic(walls);
-  return { root, colliders, monitors, pmMonitor, managerMonitor, hireMarkers, pmMarker, managerMarker, board, staffBoard, managerSign, sign, setTheme, setCutaway, chairs, walls, ceiling };
+  const elevators = new Elevators(walls, colliders);
+  return { root, colliders, monitors, pmMonitor, managerMonitor, hireMarkers, pmMarker, managerMarker, board, staffBoard, managerSign, sign, setTheme, setCutaway, chairs, walls, ceiling, elevators };
 }
 
 // ------------------------------------------------------------------ static merge

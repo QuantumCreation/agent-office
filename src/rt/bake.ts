@@ -172,8 +172,11 @@ export function bakeScene(root: THREE.Object3D): Promise<Bake> {
     // Swivel chairs are baked facing their desks and tagged with their id; the tracer turns
     // the rays instead of the chair while one is swivelled (see MovingChair).
     const rest = mesh.userData.rtRest as THREE.Matrix4[] | undefined;
+    // Moving parts with a fixed baked pose (lift doors, shut) give it in parent space.
+    const bakeLocal = mesh.userData.rtBakeLocal as THREE.Matrix4 | undefined;
     for (let i = 0; i < count; i++) {
-      world.copy(mesh.matrixWorld);
+      if (bakeLocal && mesh.parent) world.multiplyMatrices(mesh.parent.matrixWorld, bakeLocal);
+      else world.copy(mesh.matrixWorld);
       tint.setRGB(1, 1, 1);
       const chairId = rest && i < MAX_CHAIR_IDS ? i : -1;
       if (im.isInstancedMesh) {

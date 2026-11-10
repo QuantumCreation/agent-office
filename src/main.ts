@@ -122,7 +122,7 @@ const rt = new RayTracer({
   movingChairs: () => office.chairs?.moving() ?? [],
   bakeKey: () => `${floorId}|${player.view}`,
 });
-const rtHud = new RTHud(rt, ui, (on) => setRayTracing(on));
+const rtHud = new RTHud(rt, (on) => setRayTracing(on));
 function setRayTracing(on: boolean, remember = true) {
   rt.enabled = on;
   rtDecor.setVisible(on);
@@ -301,11 +301,11 @@ const staff = new StaffModal({
 // ------------------------------------------------------------------ sound
 
 let audio: AudioContext | null = null;
-function chime(kind: "attention" | "done") {
+function chime(kind: "attention" | "done" | "ding") {
   if (muted) return;
   try {
     audio ??= new AudioContext();
-    const notes = kind === "done" ? [660, 880] : [880, 660, 880];
+    const notes = kind === "ding" ? [1318.5, 1046.5] : kind === "done" ? [660, 880] : [880, 660, 880];
     notes.forEach((f, i) => {
       const o = audio!.createOscillator();
       const g = audio!.createGain();
@@ -326,7 +326,7 @@ function chime(kind: "attention" | "done") {
 
 // ------------------------------------------------------------------ floors
 
-function goToFloor(id: string, opts: { instant?: boolean; then?: () => void } = {}) {
+function goToFloor(id: string, opts: { instant?: boolean; keepPlayer?: boolean; then?: () => void } = {}) {
   const doSwitch = () => {
     for (const b of bloops.values()) b.dispose();
     for (const b of leaving) b.dispose();
@@ -345,7 +345,8 @@ function goToFloor(id: string, opts: { instant?: boolean; then?: () => void } = 
     drawSign(office.sign.ctx, floorNumber(id), floorTitle(id), theme.accent);
     city.setElevation(floorElevation(id));
     office.sign.texture.needsUpdate = true;
-    player.teleport(PLAYER_START, PLAYER_START_YAW);
+    // Riding the lift you stay where you are (in the car); otherwise you arrive at reception.
+    if (!opts.keepPlayer) player.teleport(PLAYER_START, PLAYER_START_YAW);
     intern.arriveWithBoss();
     lastBoardKey = "";
     lastStaffKey = "";
@@ -360,6 +361,12 @@ function goToFloor(id: string, opts: { instant?: boolean; then?: () => void } = 
     setTimeout(() => fadeEl.classList.remove("on"), 120);
   }, 350);
 }
+
+/** Ride lift car `cab` to a floor: doors shut, the car moves, the floor changes under you, doors open. */
+function rideTo(cab: number, id: string) {
+  office.elevators.go(cab, { id, number: floorNumber(id), title: floorTitle(id) }, () => goToFloor(id, { instant: true, keepPlayer: true }));
+}
+office.elevators.onDing = () => chime("ding");
 
 function openElevator() {
   const floors = sortedFloors();
@@ -380,7 +387,9 @@ function openElevator() {
             class: `floor-btn ${p.id === floorId ? "current" : ""}`,
             onclick: () => {
               closeModal();
-              if (p.id !== floorId) goToFloor(p.id);
+              const cab = office.elevators.cabAt(player.position);
+              if (cab >= 0) rideTo(cab, p.id);
+              else if (p.id !== floorId) goToFloor(p.id);
             },
           },
           h("span", { class: "fnum", style: `background:${themeFor(p.id).accent}` }, `${floorNumber(p.id)}F`),
@@ -775,7 +784,12 @@ function interactables(): Interactable[] {
     label: meeting ? "Meeting in progress (end it from the meeting panel)" : "Call a meeting",
     run: () => (meeting ? meeting.el.querySelector("textarea")?.focus() : openMeetingSetup()),
   });
-  list.push({ pos: ELEVATOR.panel, radius: 2.4, label: "Take the elevator", run: openElevator });
+  const inCar = office.elevators.cabAt(player.position) >= 0;
+  if (!inCar) list.push({ pos: ELEVATOR.panel, radius: 2.4, label: "Call the elevator", run: () => office.elevators.call(player.position) });
+  // Inside a car: aim at a floor button (see updatePrompt), or pick from the list.
+  else if (!office.elevators.riding) {
+    list.push({ pos: player.position.clone(), radius: 9, label: "Choose a floor", run: openElevator, weight: 50 });
+  }
   return list;
 }
 
@@ -803,6 +817,19 @@ function updatePrompt() {
       bestScore = -1;
     }
   }
+  // In a lift car, the floor button under the crosshair.
+  if (firstPerson && bestScore >= 0 && office.elevators.cabAt(player.position) >= 0 && !office.elevators.riding) {
+    raycaster.set(player.eye(), look);
+    raycaster.far = 2.5;
+    const pick = office.elevators.pick(raycaster);
+    raycaster.far = Infinity;
+    if (pick) {
+      const { cab, floor } = pick;
+      const here = floor.id === floorId;
+      best = { pos: player.position, radius: 9, label: here ? `You're on ${floor.number}F (opens the doors)` : `Go to ${floor.number}F · ${floor.title}`, run: () => rideTo(cab, floor.id) };
+      bestScore = -1;
+    }
+  } else office.elevators.clearHover();
   for (const it of interactables()) {
     if (bestScore < 0) break;
     const d = it.pos.distanceTo(player.position.clone().setY(it.pos.y));
@@ -1351,8 +1378,17 @@ function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clock.getDelta(), 0.05);
   const time = clock.elapsedTime;
+  office.elevators.setFloors(
+    sortedFloors()
+      .slice()
+      .reverse()
+      .map((p) => ({ id: p.id, number: floorNumber(p.id), title: p.title })),
+    floorId,
+  );
+  office.elevators.update(dt, [player.position, ...[...bloops.values()].map((b) => b.position), ...(intern.bloop ? [intern.bloop.position] : [])]);
   player.update(dt, office.colliders);
   player.updateCamera(camera, dt);
+  camera.position.y += office.elevators.cameraOffset;
   for (const [id, b] of bloops) {
     // Walk up to someone (or talk to them) and they swivel round in their chair to face you.
     if (b.mode === "sit" && !b.inMeeting) {
@@ -1448,4 +1484,5 @@ frame();
   seats: { pm: PM_SLOT, manager: MANAGER_SLOT, meeting: MEETING_SEATS, hangouts: HANGOUTS },
   staff,
   chairs: office.chairs,
+  elevators: office.elevators,
 };
